@@ -1,5 +1,7 @@
 import tensorflow as tf
+tf.random.set_seed(1234)
 import numpy as np
+np.random.seed(1234)
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Activation, SimpleRNN, GRU, Dropout, LSTM, LeakyReLU, Lambda, LayerNormalization
 from tensorflow.keras import regularizers
@@ -12,7 +14,18 @@ print("TensorFlow Version: {}".format(tf.__version__))
 
 ### there are a ~ton~ of tf warnings from Keras, suppress them here
 import os
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+import logging
+logger = logging.getLogger(__name__)
+logger.setLevel(os.environ.get('LOGLEVEL', logging.INFO))
+# must have a handler, otherwise logging will use lastresort
+c_handler = logging.StreamHandler()
+LOGFORMAT = '%(name)s - %(levelname)s - %(message)s'
+# c_handler.setFormatter(logging.Formatter('%(name)s - %(levelname)s - %(message)s'))
+c_handler.setFormatter(logging.Formatter(LOGFORMAT))
+logger.addHandler(c_handler)
+logger.debug('test event')
 
 
 def map_variance(samples, nu0, var0):
@@ -22,7 +35,7 @@ def map_variance(samples, nu0, var0):
     of the internal function parameterize the posterior of the variance.
     Taken from Bayesian Data Analysis, ch2 (Gelman)
 
-    samples: N length array or NxD array, where N is the number of 
+    samples: N length array or NxD array, where N is the number of
              samples and D is the dimensions
     nu0: prior degrees of freedom
     var0: prior scale parameter
@@ -32,10 +45,10 @@ def map_variance(samples, nu0, var0):
     ## Calculation ##
 
     the posterior of the variance is thus (Gelman, 2nd edition, page 50):
-        
+
         p(var | y) ~ Inv-X^2(nu0 + n, (nu0 * var0 + n * v) / (nu0 + n) )
 
-    where n is the sample size and v is the empirical variance.  The 
+    where n is the sample size and v is the empirical variance.  The
     mode of this posterior simplifies to:
 
         mode(var|y) = (nu0 * var0 + n * v) / (v0 + n + 2)
@@ -46,8 +59,11 @@ def map_variance(samples, nu0, var0):
 
     # get n and v from the data
     n = np.shape(samples)[0]
+    logger.debug(f'map_variance: n={n}')
     v = np.var(samples, axis=0)
 
+    # logger.info(f'n={n}, v={v}\n'
+    #             f'n0={nu0}, v0={var0}')
     mode = (nu0 * var0 + n * v) / (nu0 + n + 2)
     return mode
 
@@ -57,7 +73,7 @@ class LinearEvent(object):
 
     def __init__(self, d, var_df0=None, var_scale0=None, optimizer=None, n_epochs=10, init_model=False,
                  kernel_initializer='glorot_uniform', l2_regularization=0.00, batch_size=32, prior_log_prob=None,
-                 reset_weights=False, batch_update=True, optimizer_kwargs=None, variance_prior_mode=None, 
+                 reset_weights=False, batch_update=True, optimizer_kwargs=None, variance_prior_mode=None,
                  variance_window=None):
         """
 
@@ -71,22 +87,21 @@ class LinearEvent(object):
         #### ~~~ Variance Prior Parameters ~~~~ ###
         # in practice, only the mode of the variance prior
         # matters at all. Changing the df/scale but maintaining
-        # the mode has no effect on the model behavior or the 
-        # implied variance. (It does facilitate magnitude of the 
-        # log likelihood, but not the dynamic range of the 
+        # the mode has no effect on the model behavior or the
+        # implied variance. (It does facilitate magnitude of the
+        # log likelihood, but not the dynamic range of the
         # log-likelihoods). As such, it is convient to fix the
         # prior df and solve for the scale for some desired variance.
-        
-        
+
         # allow for set DF and set scale to override the variance prior mode
         if (var_df0 is not None) and (var_scale0 is not None):
             variance_prior_mode = var_df0 / (var_df0 + 2) * var_scale0
-        
+
         elif variance_prior_mode is None:
-            # in simulations, it is often convient to approximately 
-            # normalize the stim to unit length, or 
+            # in simulations, it is often convient to approximately
+            # normalize the stim to unit length, or
             # X ~ N(0, (1/d) * I)
-            variance_prior_mode = 1 / d 
+            variance_prior_mode = 1 / d
         self.variance_prior_mode = variance_prior_mode
 
         if var_df0 is None:
@@ -101,21 +116,21 @@ class LinearEvent(object):
         # new way!! evaluate the probability of the trace as given a zero mean gaussian
         # vector with the variance prior mode
         # if prior_log_prob is None:
-            # # this is a decent approximation of what a random normalized vector would
-            # # under the generative process of X ~ N(0, var_scale0 * I),
-            # # which gives (in expectation) unit vectors
-            # 
-            # # note, norm uses standard deviation, not variance
-            # prior_log_prob = norm(0, variance_prior_mode ** 0.5).logpdf(
-            #     variance_prior_mode ** 0.5) * d
-            
+        # # this is a decent approximation of what a random normalized vector would
+        # # under the generative process of X ~ N(0, var_scale0 * I),
+        # # which gives (in expectation) unit vectors
+        #
+        # # note, norm uses standard deviation, not variance
+        # prior_log_prob = norm(0, variance_prior_mode ** 0.5).logpdf(
+        #     variance_prior_mode ** 0.5) * d
+
         self.prior_probability = prior_log_prob
 
         # how many observations do we consider in calculating the variance?
         if variance_window is None:
-            variance_window = int(1e6) # this is plausiblely large...
+            variance_window = int(1e6)  # this is plausiblely large...
         self.variance_window = variance_window
-        
+
         #### ~~~ END Variance Prior Parameters ~~~~ ###
 
         self.x_history = [np.zeros((0, self.d))]
@@ -150,7 +165,7 @@ class LinearEvent(object):
             self.init_model()
 
         # generate a vector to act as a placeholder for time-points
-        # prior to the start of the event so as to allow the network 
+        # prior to the start of the event so as to allow the network
         # to implicitly learn a hidden state. We'll assume this
         # vector has length appox equal to 1
         self.filler_vector = np.random.randn(self.d) / np.sqrt(self.d)
@@ -182,7 +197,7 @@ class LinearEvent(object):
     def do_reset_weights(self):
         new_weights = [
             self.model.layers[0].kernel_initializer(w.shape)
-                for w in self.model.get_weights()
+            for w in self.model.get_weights()
         ]
         self.model.set_weights(new_weights)
         self.model_weights = self.model.get_weights()
@@ -260,7 +275,7 @@ class LinearEvent(object):
             X0 = X[-1, :]
         else:
             X0 = X
- 
+
         self.model.set_weights(self.model_weights)
         return self.model.predict(np.reshape(X0, newshape=(1, self.d)))
 
@@ -282,31 +297,49 @@ class LinearEvent(object):
         if not self.f0_is_trained:
             if self.prior_probability:
                 return self.prior_probability
-            else: 
-                return norm(0, self.variance_prior_mode ** 0.5).logpdf(Xp).sum()
+            else:
+                LL = norm(0, self.variance_prior_mode ** 0.5).logpdf(Xp).sum()
+                # tan's code to scale
+                LL /= self.d
+                logger.debug(f'f0 is not trained (new event_type), likelihood new {LL}')
+                # return norm(0, self.variance_prior_mode ** 0.5).logpdf(Xp).sum()
+                return LL
 
         # predict the initial point (# this has been precomputed for speed)
         Xp_hat = self.predict_f0()
 
         # return the probability
-        return fast_mvnorm_diagonal_logprob(Xp.reshape(-1) - Xp_hat.reshape(-1), self.Sigma)
+        LL = fast_mvnorm_diagonal_logprob(Xp.reshape(-1) - Xp_hat.reshape(-1), self.Sigma)
+        # tan's code to scale
+        LL /= self.d
+        logger.debug(f'f0 is trained (old event_type), likelihood-restart {LL}')
+        # return fast_mvnorm_diagonal_logprob(Xp.reshape(-1) - Xp_hat.reshape(-1), self.Sigma)
+        return LL
 
     def log_likelihood_next(self, X, Xp):
         if not self.f_is_trained:
             if self.prior_probability:
                 return self.prior_probability
-            else: 
-                return norm(0, self.variance_prior_mode ** 0.5).logpdf(Xp).sum()
+            else:
+                LL = norm(0, self.variance_prior_mode ** 0.5).logpdf(Xp).sum()
+                # tan's code to scale
+                LL /= self.d
+                logger.debug(f'f_next is not trained, likelihood?? {LL}')
+                # return norm(0, self.variance_prior_mode ** 0.5).logpdf(Xp).sum()
+                return LL
 
         Xp_hat = self.predict_next(X)
         LL = fast_mvnorm_diagonal_logprob(Xp.reshape(-1) - Xp_hat.reshape(-1), self.Sigma)
+        # tan's code to scale
+        LL /= self.d
+        logger.debug(f'f_next is trained, likelihood-repeat {LL}')
         return Xp_hat, LL
 
     def log_likelihood_sequence(self, X, Xp):
         if not self.f_is_trained:
             if self.prior_probability:
                 return self.prior_probability
-            else: 
+            else:
                 return norm(0, self.variance_prior_mode ** 0.5).logpdf(Xp).sum()
 
         Xp_hat = self.predict_next_generative(X)
@@ -315,8 +348,13 @@ class LinearEvent(object):
     # create a new cluster of scenes
     def new_token(self):
         if len(self.x_history) == 1 and self.x_history[0].shape[0] == 0:
+            logger.debug('new event cluster for a new event type')
             # special case for the first cluster which is already created
             return
+        # tan's code to test what if restarting already happen previously.
+        # if len(self.x_history) and self.x_history[-1].shape[0] == 0:
+        #     logger.debug('already created cluster')
+        #     return
         self.x_history.append(np.zeros((0, self.d)))
 
     def predict_next_generative(self, X):
@@ -346,6 +384,11 @@ class LinearEvent(object):
             def draw_sample_pair():
                 # draw a random cluster for the history
                 idx = np.random.randint(n_pairs)
+                # tan's code to add sampling window
+                if self.variance_window and n_pairs > self.variance_window:
+                    while n_pairs - idx > self.variance_window:
+                        logger.info(f'Index {idx} is bigger than variance window={self.variance_window}, resampling...')
+                        idx = np.random.randint(n_pairs)
                 return self.training_pairs[idx]
         else:
             # for online sampling, just use the last training sample
@@ -359,7 +402,6 @@ class LinearEvent(object):
             x_batch = []
             xp_batch = []
             for _ in range(self.batch_size):
-
                 x_sample, xp_sample = draw_sample_pair()
 
                 # these data aren't
@@ -395,7 +437,7 @@ class NonLinearEvent(LinearEvent):
                              init_model=False, kernel_initializer=kernel_initializer, batch_size=batch_size,
                              l2_regularization=l2_regularization, prior_log_prob=prior_log_prob,
                              reset_weights=reset_weights, batch_update=batch_update,
-                             optimizer_kwargs=optimizer_kwargs, variance_prior_mode=variance_prior_mode, 
+                             optimizer_kwargs=optimizer_kwargs, variance_prior_mode=variance_prior_mode,
                              variance_window=variance_window)
 
         if n_hidden is None:
@@ -426,12 +468,12 @@ class NonLinearEvent_normed(NonLinearEvent):
                  l2_regularization=0.00, dropout=0.50, prior_log_prob=None, reset_weights=False, batch_size=32,
                  batch_update=True, optimizer_kwargs=None, variance_prior_mode=None, variance_window=None):
 
-        NonLinearEvent.__init__(self, d, var_df0=var_df0, var_scale0=var_scale0,optimizer=optimizer, n_epochs=n_epochs,
-                                     l2_regularization=l2_regularization,batch_size=batch_size,
-                                     kernel_initializer=kernel_initializer, init_model=False,
-                                     prior_log_prob=prior_log_prob, reset_weights=reset_weights,
-                                     batch_update=batch_update, optimizer_kwargs=optimizer_kwargs,
-                                     variance_prior_mode=variance_prior_mode, variance_window=variance_window)
+        NonLinearEvent.__init__(self, d, var_df0=var_df0, var_scale0=var_scale0, optimizer=optimizer, n_epochs=n_epochs,
+                                l2_regularization=l2_regularization, batch_size=batch_size,
+                                kernel_initializer=kernel_initializer, init_model=False,
+                                prior_log_prob=prior_log_prob, reset_weights=reset_weights,
+                                batch_update=batch_update, optimizer_kwargs=optimizer_kwargs,
+                                variance_prior_mode=variance_prior_mode, variance_window=variance_window)
 
         if n_hidden is None:
             n_hidden = d
@@ -451,7 +493,7 @@ class NonLinearEvent_normed(NonLinearEvent):
         self.model.add(Dense(self.d, activation='linear',
                              kernel_regularizer=self.kernel_regularizer,
                              kernel_initializer=self.kernel_initializer))
-        self.model.add(Lambda(lambda x: l2_normalize(x, axis=-1)))  
+        self.model.add(Lambda(lambda x: l2_normalize(x, axis=-1)))
         self.model.compile(**self.compile_opts)
 
 
@@ -480,14 +522,14 @@ class RecurrentLinearEvent(LinearEvent):
     def __init__(self, d, var_df0=None, var_scale0=None, t=3,
                  optimizer=None, n_epochs=10, l2_regularization=0.00, batch_size=32,
                  kernel_initializer='glorot_uniform', init_model=False, prior_log_prob=None, reset_weights=False,
-                 batch_update=True, optimizer_kwargs=None,variance_prior_mode=None, 
+                 batch_update=True, optimizer_kwargs=None, variance_prior_mode=None,
                  variance_window=None):
 
         LinearEvent.__init__(self, d, var_df0=var_df0, var_scale0=var_scale0,
                              optimizer=optimizer, n_epochs=n_epochs,
                              init_model=False, kernel_initializer=kernel_initializer,
                              l2_regularization=l2_regularization, prior_log_prob=prior_log_prob,
-                             reset_weights=reset_weights, batch_update=batch_update, 
+                             reset_weights=reset_weights, batch_update=batch_update,
                              optimizer_kwargs=optimizer_kwargs, variance_prior_mode=variance_prior_mode,
                              variance_window=variance_window)
 
@@ -507,7 +549,7 @@ class RecurrentLinearEvent(LinearEvent):
         # cache the initial weights for retraining speed
         self.init_weights = None
         # generate a vector to act as a placeholder for time-points
-        # prior to the start of the event so as to allow the network 
+        # prior to the start of the event so as to allow the network
         # to implicitly learn a hidden state. We'll assume this
         # vector has length appox equal to 1
         self.filler_vector = np.random.randn(self.d) / np.sqrt(self.d)
@@ -517,7 +559,7 @@ class RecurrentLinearEvent(LinearEvent):
         if self.init_weights is None:
             new_weights = [
                 self.model.layers[0].kernel_initializer(w.shape)
-                 for w in self.model.get_weights()
+                for w in self.model.get_weights()
             ]
             self.model.set_weights(new_weights)
             self.model_weights = self.model.get_weights()
@@ -537,6 +579,7 @@ class RecurrentLinearEvent(LinearEvent):
     # this is for the recurrent layer
     #
     def _unroll(self, x_example):
+        logger.debug(f'_predict_next->_unroll: x_history[-1] {self.x_history[-1].shape}')
         x_train = np.concatenate([self.x_history[-1][-(self.t - 1):, :], x_example], axis=0)
         # x_train = np.concatenate([self.filler_vector, x_train], axis=0)
         x_train = x_train.reshape((1, np.min([x_train.shape[0], self.t]), self.d))
@@ -556,7 +599,9 @@ class RecurrentLinearEvent(LinearEvent):
 
         # concatenate current example with history of last t-1 examples
         # this is for the recurrent part of the network
+        # logger.debug(f'_predict_next: x_history_len={len(self.x_history)}')
         x_test = self._unroll(x_test)
+        # logger.debug(f'_predict_next: x_test {x_test.shape}')
         return self.model.predict(x_test)
 
     def _predict_f0(self):
@@ -584,9 +629,11 @@ class RecurrentLinearEvent(LinearEvent):
         #  picks  random time-point in the history
         _n = np.shape(self.x_history[-1])[0]
         x_train_example = np.reshape(
-                    unroll_data(self.x_history[-1][max(_n - self.t, 0):, :], self.t)[-1, :, :], (1, self.t, self.d)
-                )
+            unroll_data(self.x_history[-1][max(_n - self.t, 0):, :], self.t)[-1, :, :], (1, self.t, self.d)
+        )
+        logger.debug(f'\nGRUEvent->update: x_train_example {x_train_example.shape}')
         self.training_pairs.append(tuple([x_train_example, xp_example]))
+        logger.debug(f'training_pairs: {len(self.training_pairs)}')
 
         if update_estimate:
             self.estimate()
@@ -595,6 +642,7 @@ class RecurrentLinearEvent(LinearEvent):
     def predict_next_generative(self, X):
         self.model.set_weights(self.model_weights)
         X0 = np.reshape(unroll_data(X, self.t)[-1, :, :], (1, self.t, self.d))
+        logger.debug(f'predict_next_generative: X0 {X0.shape}')
         return self.model.predict(X0)
 
     # optional: run batch gradient descent on all past event clusters
@@ -604,7 +652,7 @@ class RecurrentLinearEvent(LinearEvent):
         else:
             self.model.set_weights(self.model_weights)
 
-        # get predictions errors for variance estimate *before* updating the 
+        # get predictions errors for variance estimate *before* updating the
         # neural networks.  For an untrained model, the prediction should be the
         # origin, deterministically
 
@@ -612,14 +660,13 @@ class RecurrentLinearEvent(LinearEvent):
         x_train_0, xp_train_0 = self.training_pairs[-1]
         xp_hat = self.model.predict(x_train_0)
         self.prediction_errors = np.concatenate([self.prediction_errors, xp_train_0 - xp_hat], axis=0)
-                
+
         # remove old observations from consideration of the variance
         t = np.max([0, np.shape(self.prediction_errors)[0] - self.variance_window])
         self.prediction_errors = self.prediction_errors[t:, :]
 
         # update the variance
         self._update_variance()
-
 
         ## then update the NN
         n_pairs = len(self.training_pairs)
@@ -641,7 +688,6 @@ class RecurrentLinearEvent(LinearEvent):
             x_batch = np.zeros((0, self.t, self.d))
             xp_batch = np.zeros((0, self.d))
             for _ in range(self.batch_size):
-
                 x_sample, xp_sample = draw_sample_pair()
 
                 x_batch = np.concatenate([x_batch, x_sample], axis=0)
@@ -655,8 +701,8 @@ class RecurrentEvent(RecurrentLinearEvent):
 
     def __init__(self, d, var_df0=None, var_scale0=None, t=3, n_hidden=None, optimizer=None,
                  n_epochs=10, dropout=0.50, l2_regularization=0.00, batch_size=32,
-                 kernel_initializer='glorot_uniform', init_model=False, prior_log_prob=None, reset_weights=False, 
-                 batch_update=True, optimizer_kwargs=None, variance_prior_mode=None,variance_window=None):
+                 kernel_initializer='glorot_uniform', init_model=False, prior_log_prob=None, reset_weights=False,
+                 batch_update=True, optimizer_kwargs=None, variance_prior_mode=None, variance_window=None):
 
         RecurrentLinearEvent.__init__(self, d, var_df0, var_scale0=None, t=t,
                                       optimizer=optimizer, n_epochs=n_epochs,
@@ -685,7 +731,7 @@ class RecurrentEvent(RecurrentLinearEvent):
         self.model.add(LeakyReLU(alpha=0.3))
         self.model.add(Dropout(rate=self.dropout))
         self.model.add(Dense(self.d, activation=None, kernel_regularizer=self.kernel_regularizer,
-                  kernel_initializer=self.kernel_initializer))
+                             kernel_initializer=self.kernel_initializer))
         self.model.compile(**self.compile_opts)
 
 
@@ -694,7 +740,7 @@ class GRUEvent(RecurrentLinearEvent):
     def __init__(self, d, var_df0=None, var_scale0=None, t=3, n_hidden=None, optimizer=None,
                  n_epochs=10, dropout=0.50, l2_regularization=0.00, batch_size=32,
                  kernel_initializer='glorot_uniform', init_model=False, prior_log_prob=None, reset_weights=False,
-                 batch_update=True, optimizer_kwargs=None,variance_prior_mode=None,variance_window=None):
+                 batch_update=True, optimizer_kwargs=None, variance_prior_mode=None, variance_window=None):
 
         RecurrentLinearEvent.__init__(self, d, var_df0=var_df0, var_scale0=var_scale0, t=t,
                                       optimizer=optimizer, n_epochs=n_epochs,
@@ -718,53 +764,53 @@ class GRUEvent(RecurrentLinearEvent):
         # input_shape[0] = timesteps; we pass the last self.t examples for train the hidden layer
         # input_shape[1] = input_dim; each example is a self.d-dimensional vector
         self.model.add(GRU(self.n_hidden, input_shape=(None, self.d),
-                                 kernel_regularizer=self.kernel_regularizer,
-                                 kernel_initializer=self.kernel_initializer))
+                           kernel_regularizer=self.kernel_regularizer,
+                           kernel_initializer=self.kernel_initializer))
         self.model.add(LeakyReLU(alpha=0.3))
         self.model.add(Dropout(rate=self.dropout))
         self.model.add(Dense(self.d, activation=None, kernel_regularizer=self.kernel_regularizer,
-                  kernel_initializer=self.kernel_initializer))
+                             kernel_initializer=self.kernel_initializer))
         self.model.compile(**self.compile_opts)
+
 
 # depricating the layers with normalized outputs -- this seems to be unneeded with proper training
 # class GRUEvent_normed(RecurrentLinearEvent):
 
-    # def __init__(self, d, var_df0=None, var_scale0=None, t=3, n_hidden=None, optimizer=None,
-    #              n_epochs=10, dropout=0.50, l2_regularization=0.00, batch_size=32,
-    #              kernel_initializer='glorot_uniform', init_model=False, prior_log_prob=None, reset_weights=False,
-    #              batch_update=True, optimizer_kwargs=None, variance_prior_mode=None,variance_window=None):
+# def __init__(self, d, var_df0=None, var_scale0=None, t=3, n_hidden=None, optimizer=None,
+#              n_epochs=10, dropout=0.50, l2_regularization=0.00, batch_size=32,
+#              kernel_initializer='glorot_uniform', init_model=False, prior_log_prob=None, reset_weights=False,
+#              batch_update=True, optimizer_kwargs=None, variance_prior_mode=None,variance_window=None):
 
-    #     RecurrentLinearEvent.__init__(self, d, var_df0=var_df0, var_scale0=var_scale0, t=t,
-    #                                   optimizer=optimizer, n_epochs=n_epochs,
-    #                                   l2_regularization=l2_regularization, batch_size=batch_size,
-    #                                   kernel_initializer=kernel_initializer, init_model=False,
-    #                                   prior_log_prob=prior_log_prob, reset_weights=reset_weights,
-    #                                   batch_update=batch_update, optimizer_kwargs=optimizer_kwargs,
-    #                                   variance_prior_mode=variance_prior_mode, variance_window=variance_window)
+#     RecurrentLinearEvent.__init__(self, d, var_df0=var_df0, var_scale0=var_scale0, t=t,
+#                                   optimizer=optimizer, n_epochs=n_epochs,
+#                                   l2_regularization=l2_regularization, batch_size=batch_size,
+#                                   kernel_initializer=kernel_initializer, init_model=False,
+#                                   prior_log_prob=prior_log_prob, reset_weights=reset_weights,
+#                                   batch_update=batch_update, optimizer_kwargs=optimizer_kwargs,
+#                                   variance_prior_mode=variance_prior_mode, variance_window=variance_window)
 
-    #     if n_hidden is None:
-    #         self.n_hidden = d
-    #     else:
-    #         self.n_hidden = n_hidden
-    #     self.dropout = dropout
+#     if n_hidden is None:
+#         self.n_hidden = d
+#     else:
+#         self.n_hidden = n_hidden
+#     self.dropout = dropout
 
-    #     if init_model:
-    #         self.init_model()
+#     if init_model:
+#         self.init_model()
 
-    # def _compile_model(self):
-    #     self.model = Sequential()
-    #     # input_shape[0] = timesteps; we pass the last self.t examples for train the hidden layer
-    #     # input_shape[1] = input_dim; each example is a self.d-dimensional vector
-    #     self.model.add(GRU(self.n_hidden, input_shape=(self.t, self.d),
-    #                              kernel_regularizer=self.kernel_regularizer,
-    #                              kernel_initializer=self.kernel_initializer))
-    #     self.model.add(LeakyReLU(alpha=0.3))
-    #     self.model.add(Dropout(rate=self.dropout))
-    #     self.model.add(Dense(self.d, activation=None, kernel_regularizer=self.kernel_regularizer,
-    #               kernel_initializer=self.kernel_initializer))
-    #     self.model.add(Lambda(lambda x: l2_normalize(x, axis=-1)))  
-    #     self.model.compile(**self.compile_opts)
-
+# def _compile_model(self):
+#     self.model = Sequential()
+#     # input_shape[0] = timesteps; we pass the last self.t examples for train the hidden layer
+#     # input_shape[1] = input_dim; each example is a self.d-dimensional vector
+#     self.model.add(GRU(self.n_hidden, input_shape=(self.t, self.d),
+#                              kernel_regularizer=self.kernel_regularizer,
+#                              kernel_initializer=self.kernel_initializer))
+#     self.model.add(LeakyReLU(alpha=0.3))
+#     self.model.add(Dropout(rate=self.dropout))
+#     self.model.add(Dense(self.d, activation=None, kernel_regularizer=self.kernel_regularizer,
+#               kernel_initializer=self.kernel_initializer))
+#     self.model.add(Lambda(lambda x: l2_normalize(x, axis=-1)))
+#     self.model.compile(**self.compile_opts)
 
 
 class GRUEvent_spherical_noise(GRUEvent):
@@ -773,7 +819,6 @@ class GRUEvent_spherical_noise(GRUEvent):
         if np.shape(self.prediction_errors)[0] > 1:
             var = map_variance(self.prediction_errors.reshape(-1), self.var_df0, self.var_scale0)
             self.Sigma = var * np.ones(self.d)
-
 
 
 class LSTMEvent(RecurrentLinearEvent):
@@ -806,8 +851,15 @@ class LSTMEvent(RecurrentLinearEvent):
         # input_shape[0] = time-steps; we pass the last self.t examples for train the hidden layer
         # input_shape[1] = input_dim; each example is a self.d-dimensional vector
         self.model.add(LSTM(self.n_hidden, input_shape=(None, self.d),
-                           kernel_regularizer=self.kernel_regularizer,
-                           kernel_initializer=self.kernel_initializer))
+                            kernel_regularizer=self.kernel_regularizer,
+                            kernel_initializer=self.kernel_initializer,
+                            return_sequences=True
+                            ))
+        # tan's code to enlarge model
+        self.model.add(LSTM(self.n_hidden,
+                            kernel_regularizer=self.kernel_regularizer,
+                            kernel_initializer=self.kernel_initializer))
+
         self.model.add(LeakyReLU(alpha=0.3))
         self.model.add(Dropout(rate=self.dropout))
         self.model.add(Dense(self.d, activation=None, kernel_regularizer=self.kernel_regularizer,
