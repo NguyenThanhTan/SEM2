@@ -386,20 +386,24 @@ class SEM(object):
                     # surprise[ii] = log_like[ii, self.k_prev]
 
             self.c[k] += self.kappa  # update counts
-            # update event model
-            if not event_boundary:
-                # we're in the same event -> update using previous scene
-                assert self.x_prev is not None
-                # tan's code to not training while inferring
-                if train:
+            # tan's code to not training while inferring
+            if train:
+                # update event model
+                if not event_boundary:
+                    # we're in the same event -> update using previous scene
+                    assert self.x_prev is not None
+                    # tan's code to not training while inferring
                     self.event_models[k].update(self.x_prev, x_curr)
-            else:
-                # we're in a new event token -> update the initialization point only
-                self.event_models[k].new_token()
-                self.event_models[k].update_f0(x_curr)
+                else:
+                    # we're in a new event token -> update the initialization point only
+                    self.event_models[k].new_token()
+                    self.event_models[k].update_f0(x_curr)
 
             self.x_prev = x_curr  # store the current scene for next trial
-            self.k_prev = k  # store the current event for the next trial
+            if k == len(active) - 1 and not train:
+                logger.warning(f'Creating a new event event with alfa={self.alfa} while doing validation, ignoring!!!')
+            else:
+                self.k_prev = k  # store the current event for the next trial
 
         # calculate Bayesian Surprise
         # tan's intepretation (might be wrong):
@@ -408,6 +412,7 @@ class SEM(object):
         log_post -= np.tile(logsumexp(log_post, axis=1), (np.shape(log_post)[1], 1)).T
         surprise = np.concatenate([[0], logsumexp(log_post + log_like[1:, :], axis=1)])
 
+        # TODO: can remove null columns to optimize memory storage.
         self.results = Results()
         self.results.post = post
         self.results.pe = pe
@@ -418,14 +423,15 @@ class SEM(object):
         # self.results.e_hat = np.argmax(log_like + log_prior, axis=1)
         self.results.e_hat = np.argmax(post, axis=1)
         self.results.x_hat = x_hat
-        self.results.log_loss = logsumexp(log_like + log_prior, axis=1)
-        self.results.log_boundary_probability = log_boundary_probability
+        # self.results.log_loss = logsumexp(log_like + log_prior, axis=1)
+        # self.results.log_boundary_probability = log_boundary_probability
 
-        self.results.restart_indices = restart_indices
-        self.results.repeat_indices = repeat_indices
+        # self.results.restart_indices = restart_indices
+        # self.results.repeat_indices = repeat_indices
         self.results.boundaries = boundaries
-        self.results.frame_dynamics = frame_dynamics
+        # self.results.frame_dynamics = frame_dynamics
         self.results.c = self.c.copy()
+        # self.results.Sigma = {i: self.event_models[i].Sigma for i in self.event_models.keys()}
         if minimize_memory:
             self.clear_event_models()
             return
