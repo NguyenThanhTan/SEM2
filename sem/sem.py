@@ -412,12 +412,15 @@ class SEM(object):
         log_post -= np.tile(logsumexp(log_post, axis=1), (np.shape(log_post)[1], 1)).T
         surprise = np.concatenate([[0], logsumexp(log_post + log_like[1:, :], axis=1)])
 
-        # TODO: can remove null columns to optimize memory storage.
+        # Remove null columns to optimize memory storage, only for some arrays.
         self.results = Results()
+        post = post[:, np.any(post != 0, axis=0)]
         self.results.post = post
         self.results.pe = pe
         self.results.surprise = surprise
+        log_like = log_like[:, np.any(log_like != -np.inf, axis=0)]
         self.results.log_like = log_like
+        log_prior = log_prior[:, np.any(log_prior != -np.inf, axis=0)]
         self.results.log_prior = log_prior
         # Should derive e_hat from post, avoid two-sources problem.
         # self.results.e_hat = np.argmax(log_like + log_prior, axis=1)
