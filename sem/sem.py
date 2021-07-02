@@ -64,7 +64,7 @@ class SEM(object):
         self.c = np.array([])  # used by the sCRP prior -> running count of the clustering process
         self.d = None  # dimension of scenes
         self.event_models = dict()  # event model for each event type
-        self.model = None  # this is the tensorflow model that gets used
+        self.model = None  # this is the tensorflow model that gets used, the architecture is shared while weights are specific
 
         self.x_prev = None  # last scene
         self.k_prev = None  # last event type
@@ -73,6 +73,9 @@ class SEM(object):
 
         # instead of dumping the results, store them to the object
         self.results = None
+
+        # a general event model to initialize new events
+        self.general_event_model = None
 
     def pretrain(self, x, event_types, event_boundaries, progress_bar=True, leave_progress_bar=True):
         """
@@ -158,6 +161,8 @@ class SEM(object):
 
         # calculate sCRP prior
         prior = self.c.copy()
+        # added on june 22 to test the case when old is not benefited
+        prior[prior > 0] = 1
         idx = len(np.nonzero(self.c)[0])  # get number of visited clusters
 
         # tan's code to correct when k is not None
@@ -242,6 +247,21 @@ class SEM(object):
         for ii in my_it(n):
 
             x_curr = x[ii, :].copy()
+            # parallel training a general event model
+            if train:
+                if self.general_event_model is None:
+                    new_model = self.f_class(self.d, **self.f_opts)
+                    if self.model is None:
+                        self.model = new_model.init_model()
+                    else:
+                        new_model.set_model(self.model)
+                    self.general_event_model = new_model
+                    new_model = None  # clear the new model variable (but not the model itself) from memory
+                if self.x_prev is None:
+                    self.general_event_model.new_token()
+                    self.general_event_model.update_f0(x_curr)
+                else:
+                    self.general_event_model.update(self.x_prev, x_curr)
 
             # calculate sCRP prior
             prior = self._calculate_unnormed_sCRP(self.k_prev)
@@ -395,9 +415,26 @@ class SEM(object):
                     # tan's code to not training while inferring
                     self.event_models[k].update(self.x_prev, x_curr)
                 else:
-                    # we're in a new event token -> update the initialization point only
-                    self.event_models[k].new_token()
-                    self.event_models[k].update_f0(x_curr)
+                    # new event and not the only event
+                    if k == len(active) - 1 and k != 0:
+                        # increase n_epochs for new events
+                        self.event_models[k].n_epochs = int(self.event_models[k].n_epochs * 5)
+                        # set weights based on the current event
+                        # if self.k_prev is not None:
+                        #     self.event_models[k].model.set_weights(self.event_models[self.k_prev].model_weights)
+
+                        # set weights based on the general event model
+                        self.event_models[k].model.set_weights(self.general_event_model.model_weights)
+
+                        # we're in a new event token -> update the initialization point only
+                        self.event_models[k].new_token()
+                        self.event_models[k].update_f0(x_curr)
+                        # restore n_epochs
+                        self.event_models[k].n_epochs = int(self.event_models[k].n_epochs / 5)
+                    else:
+                        # we're in a new event token -> update the initialization point only
+                        self.event_models[k].new_token()
+                        self.event_models[k].update_f0(x_curr)
 
             self.x_prev = x_curr  # store the current scene for next trial
             if k == len(active) - 1 and not train:
@@ -434,7 +471,7 @@ class SEM(object):
         self.results.boundaries = boundaries
         # self.results.frame_dynamics = frame_dynamics
         self.results.c = self.c.copy()
-        # self.results.Sigma = {i: self.event_models[i].Sigma for i in self.event_models.keys()}
+        self.results.Sigma = {i: self.event_models[i].Sigma for i in self.event_models.keys()}
         if minimize_memory:
             self.clear_event_models()
             return
