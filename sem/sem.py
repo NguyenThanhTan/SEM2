@@ -433,11 +433,11 @@ class SEM(object):
                         self.event_models[k].n_epochs = int(self.event_models[k].n_epochs / 5)
 
                         # update f0 for general model as well
-                        # x_train_example = np.reshape(
-                        #     unroll_data(self.general_event_model.filler_vector.reshape((1, self.d)), self.general_event_model.t)[-1, :, :],
-                        #     (1, self.general_event_model.t, self.d)
-                        # )
-                        # self.general_event_model.training_pairs.append(tuple([x_train_example, x_curr.reshape((1, self.d))]))
+                        x_train_example = np.reshape(
+                            unroll_data(self.general_event_model.filler_vector.reshape((1, self.d)), self.general_event_model.t)[-1, :, :],
+                            (1, self.general_event_model.t, self.d)
+                        )
+                        self.general_event_model.training_pairs.append(tuple([x_train_example, x_curr.reshape((1, self.d))]))
                     else:
                         # we're in a new event token -> update the initialization point only
                         self.event_models[k].new_token()
