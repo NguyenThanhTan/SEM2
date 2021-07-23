@@ -326,7 +326,8 @@ class LinearEvent(object):
                 LL /= self.d
                 logger.debug(f'f_next is not trained, likelihood?? {LL}')
                 # return norm(0, self.variance_prior_mode ** 0.5).logpdf(Xp).sum()
-                return LL
+                Xp_hat = self.predict_next(X)
+                return Xp_hat, LL
 
         Xp_hat = self.predict_next(X)
         LL = fast_mvnorm_diagonal_logprob(Xp.reshape(-1) - Xp_hat.reshape(-1), self.Sigma)
@@ -673,6 +674,10 @@ class RecurrentLinearEvent(LinearEvent):
 
         if self.batch_update:
             def draw_sample_pair():
+                # it's good to try 20% online sampling and 80% batch sampling
+                # not tested, added on july 14-th
+                # if np.random.rand() < 0.2:
+                #     return self.training_pairs[-1]
                 # draw a random cluster for the history
                 idx = np.random.randint(n_pairs)
                 return self.training_pairs[idx]
