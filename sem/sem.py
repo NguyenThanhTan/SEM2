@@ -431,6 +431,7 @@ class SEM(object):
                         self.event_models[k].n_epochs = int(self.event_models[k].n_epochs * 5)
                         # set weights based on the general event model
                         self.event_models[k].model.set_weights(self.general_event_model.model_weights)
+                        self.event_models[k].model.model_weights = self.event_models[k].model.get_weights()
                         # we're in a new event token -> update the initialization point only
                         self.event_models[k].new_token()
                         # self.event_models[k].update_f0(x_curr)
