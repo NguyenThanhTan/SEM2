@@ -319,20 +319,20 @@ class SEM(object):
                 _post[self.k_prev] = np.max([repeat_prob, restart_prob])
 
                 # readout probabilities, these are in raw scales so we can know the magnitude.
-                frame_dynamics['restart_lik'].append(lik_restart_event)
-                frame_dynamics['repeat_lik'].append(lik[self.k_prev])
-                # lik and prior and _post will be modified later, slicing to copy here
-                old_liks = [l for l in lik[:len(active) - 1]]
-                frame_dynamics['old_lik'].append(np.array(old_liks, dtype=float))
-                frame_dynamics['new_lik'].append(lik[len(active) - 1])
-
-                frame_dynamics['restart_prior'].append(np.log(prior[self.k_prev] - self.lmda) / self.d)
-                frame_dynamics['repeat_prior'].append(np.log(prior[self.k_prev]) / self.d)
-                old_priors = [p for p in prior[:len(active) - 1]]
-                frame_dynamics['old_prior'].append(np.log(np.array(old_priors, dtype=float)) / self.d)
-                frame_dynamics['new_prior'].append(np.log(prior[len(active) - 1]) / self.d)
-                all_posteriors = [p for p in _post[:len(active)]]
-                frame_dynamics['post'].append(all_posteriors)
+                # frame_dynamics['restart_lik'].append(lik_restart_event)
+                # frame_dynamics['repeat_lik'].append(lik[self.k_prev])
+                # # lik and prior and _post will be modified later, slicing to copy here
+                # old_liks = [l for l in lik[:len(active) - 1]]
+                # frame_dynamics['old_lik'].append(np.array(old_liks, dtype=float))
+                # frame_dynamics['new_lik'].append(lik[len(active) - 1])
+                #
+                # frame_dynamics['restart_prior'].append(np.log(prior[self.k_prev] - self.lmda) / self.d)
+                # frame_dynamics['repeat_prior'].append(np.log(prior[self.k_prev]) / self.d)
+                # old_priors = [p for p in prior[:len(active) - 1]]
+                # frame_dynamics['old_prior'].append(np.log(np.array(old_priors, dtype=float)) / self.d)
+                # frame_dynamics['new_prior'].append(np.log(prior[len(active) - 1]) / self.d)
+                # all_posteriors = [p for p in _post[:len(active)]]
+                # frame_dynamics['post'].append(all_posteriors)
             logger.debug(f'\nlog_prior {np.log(prior[:len(active)]) / self.d}'
                          f'\nlog_lik {lik:}'
                          f'\nlog_post {_post:}')
@@ -340,11 +340,11 @@ class SEM(object):
             # get the MAP cluster and only update it
             k = np.argmax(_post)  # MAP cluster
             logger.debug(f'\nEvent type {k}')
-            if k == self.k_prev:
-                if restart_prob > repeat_prob:
-                    restart_indices.append(ii)
-                else:
-                    repeat_indices.append(ii)
+            # if k == self.k_prev:
+            #     if restart_prob > repeat_prob:
+            #         restart_indices.append(ii)
+            #     else:
+            #         repeat_indices.append(ii)
             if k != self.k_prev:
                 logger.debug(f'Boundary Switching')
             # determine whether there was a boundary
@@ -419,12 +419,11 @@ class SEM(object):
                     if k == len(active) - 1 and k != 0:
                         # increase n_epochs for new events
                         self.event_models[k].n_epochs = int(self.event_models[k].n_epochs * 5)
-                        # set weights based on the current event
-                        # if self.k_prev is not None:
-                        #     self.event_models[k].model.set_weights(self.event_models[self.k_prev].model_weights)
 
-                        # set weights based on the general event model
-                        self.event_models[k].model.set_weights(self.general_event_model.model_weights)
+                        # set weights based on the general event model,
+                        # always use .model_weights instead of .model.get_weights() or .model.set_weights(...)
+                        # because .model is a common model used by all event models, its weights are of the last model being used
+                        self.event_models[k].model_weights = self.general_event_model.model_weights
 
                         # we're in a new event token -> update the initialization point only
                         self.event_models[k].new_token()
