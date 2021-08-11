@@ -1,16 +1,27 @@
+# If using multiprocessing, this module will be imported dynamically
+print('Run sem.py')
 import numpy as np
+
 np.random.seed(1234)
 import tensorflow as tf
+
 tf.random.set_seed(1234)
 from scipy.special import logsumexp
 from tqdm import tqdm
 from .event_models import GRUEvent
 from .utils import delete_object_attributes, unroll_data
+import ray
+
+# uncomment this line will generate weird error: cannot import GRUEvent...,
+# actually because ray causes error while importing this file.
+# ray.init()
 
 # there are a ~ton~ of tf warnings from Keras, suppress them here
 import os
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import logging
+
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get('LOGLEVEL', logging.INFO))
 # must have a handler, otherwise logging will use lastresort
@@ -56,6 +67,7 @@ class SEM(object):
             raise ValueError("f_model must be specified!")
 
         self.f_class = f_class
+        self.f_class_remote = ray.remote(f_class)
         self.f_opts = f_opts
 
         # SEM internal state
@@ -277,43 +289,28 @@ class SEM(object):
             # store the predicted vector
             x_hat_active = None
 
+            kwargs = {'x_curr': x_curr, 'x_prev': self.x_prev, 'k_prev': self.k_prev}
+            jobs = []
+            array_res = []
             for k0 in active:
                 if k0 not in self.event_models.keys():
-                    new_model = self.f_class(self.d, **self.f_opts)
-                    if self.model is None:
-                        self.model = new_model.init_model()
-                    else:
-                        new_model.set_model(self.model)
+                    # This line trigger dynamic importing
+                    new_model = self.f_class_remote.remote(self.d, **self.f_opts)
+                    new_model.init_model.remote()
                     self.event_models[k0] = new_model
-                    new_model = None  # clear the new model variable (but not the model itself) from memory
-
-                # get the log likelihood for each event model
-                model = self.event_models[k0]
-
-                # detect when there is a change in event types (not the same thing as boundaries)
-                current_event = (k0 == self.k_prev)
-
-                logger.debug(f'\nk0 {k0} vs k_prev {self.k_prev}')
-                # Calculate likelihoods for all events
-                # hidden=True, model.log_likelihood_next will concat model.x_history[-1] to self.x_prev to predict x_hat,
-                # which is inappropriate for all old events, except the current event
-                if current_event:
-                    assert self.x_prev is not None
-                    # _predict_next does account for past scenes in history with hidden=True
-                    x_hat_active, lik[k0] = model.log_likelihood_next(self.x_prev, x_curr, hidden=True)
-
-                    # special case for the possibility of returning to the start of the current event
-                    # lik_restart_event = model.log_likelihood_f0(x_curr)
-                    # added on july_26, manually tested and the logic is correct
-                    # hidden=False, past scenes don't influence here
-                    _, lik_restart_event = model.log_likelihood_next(self.x_prev, x_curr, hidden=False)
+                jobs.append(self.event_models[k0].get_likelihood.remote(k0, **kwargs))
+                # Chunking only constrain cpu usage, memory usage grows as self.f_class_remote.remote(self.d, **self.f_opts)
+                # 300MB per Actor.
+                if len(jobs) == 16:
+                    array_res = array_res + ray.get(jobs)
+                    jobs = []
+            array_res = array_res + ray.get(jobs)
+            for (k0, pack) in array_res:
+                if k0 == self.k_prev:
+                    x_hat_active, lik[k0], lik_restart_event = pack
                 else:
-                    # lik[k0] = model.log_likelihood_f0(x_curr)
-                    # hidden=False, past scenes don't influence here
-                    if self.x_prev is None:  # start of each run
-                        _, lik[k0] = model.log_likelihood_next(x_curr, x_curr, hidden=False)
-                    else:
-                        _, lik[k0] = model.log_likelihood_next(self.x_prev, x_curr, hidden=False)
+                    lik[k0] = pack
+
             # determine the event identity (without worrying about event breaks for now)
             _post = np.log(prior[:len(active)]) / self.d + lik
             if ii > 0:
@@ -423,28 +420,31 @@ class SEM(object):
                 if not event_boundary:
                     # we're in the same event -> update using previous scene
                     assert self.x_prev is not None
-                    self.event_models[k].update(self.x_prev, x_curr)
+                    self.event_models[k].update.remote(self.x_prev, x_curr)
                 else:
                     # new event and not the only event, initialize by a world model
                     if k == len(active) - 1 and k != 0:
                         # increase n_epochs for new events
-                        self.event_models[k].n_epochs = int(self.event_models[k].n_epochs * 5)
+                        # self.event_models[k].n_epochs = int(self.event_models[k].n_epochs * 5)
+                        self.event_models[k].set_n_epochs.remote(int(ray.get(self.event_models[k].get_n_epochs.remote()) * 5))
 
                         # set weights based on the general event model,
                         # always use .model_weights instead of .model.get_weights() or .model.set_weights(...)
                         # because .model is a common model used by all event models, its weights are of the last model being used
-                        self.event_models[k].model_weights = self.general_event_model.model_weights
+                        # self.event_models[k].model_weights = self.general_event_model.model_weights
+                        self.event_models[k].set_model_weights.remote(self.general_event_model.model_weights)
 
                         # we're in a new event token -> update the initialization point only
-                        self.event_models[k].new_token()
+                        self.event_models[k].new_token.remote()
                         # self.event_models[k].update_f0(x_curr)
                         if self.x_prev is None:  # start of each run
                             # assume that the previous scene is the same scene, so that not using update_f0
-                            self.event_models[k].update(x_curr, x_curr)
+                            self.event_models[k].update.remote(x_curr, x_curr)
                         else:
-                            self.event_models[k].update(self.x_prev, x_curr)
+                            self.event_models[k].update.remote(self.x_prev, x_curr)
                         # restore n_epochs
-                        self.event_models[k].n_epochs = int(self.event_models[k].n_epochs / 5)
+                        # self.event_models[k].n_epochs = int(self.event_models[k].n_epochs / 5)
+                        self.event_models[k].set_n_epochs.remote(int(ray.get(self.event_models[k].get_n_epochs.remote()) / 5))
 
                         # update f0 for general model as well
                         # x_train_example = np.reshape(
@@ -454,13 +454,13 @@ class SEM(object):
                         # self.general_event_model.training_pairs.append(tuple([x_train_example, x_curr.reshape((1, self.d))]))
                     else:
                         # we're in a new event token -> update the initialization point only
-                        self.event_models[k].new_token()
+                        self.event_models[k].new_token.remote()
                         # self.event_models[k].update_f0(x_curr)
                         if self.x_prev is None:  # start of each run
                             # assume that the previous scene is the same scene, so that not using update_f0
-                            self.event_models[k].update(x_curr, x_curr)
+                            self.event_models[k].update.remote(x_curr, x_curr)
                         else:
-                            self.event_models[k].update(self.x_prev, x_curr)
+                            self.event_models[k].update.remote(self.x_prev, x_curr)
 
             self.x_prev = x_curr  # store the current scene for next trial
             if k == len(active) - 1 and not train:
@@ -497,7 +497,7 @@ class SEM(object):
         self.results.boundaries = boundaries
         # self.results.frame_dynamics = frame_dynamics
         self.results.c = self.c.copy()
-        self.results.Sigma = {i: self.event_models[i].Sigma for i in self.event_models.keys()}
+        # self.results.Sigma = {i: self.event_models[i].Sigma for i in self.event_models.keys()}
         if minimize_memory:
             self.clear_event_models()
             return

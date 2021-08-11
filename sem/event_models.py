@@ -1,7 +1,12 @@
-import tensorflow as tf
-tf.random.set_seed(1234)
+# If using multiprocessing, this module will be imported dynamically
+print('Runt  event_models.py')
 import numpy as np
+
 np.random.seed(1234)
+import tensorflow as tf
+
+tf.random.set_seed(1234)
+print(f"{__file__}: TensorFlow Version: {tf.__version__}")
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Activation, SimpleRNN, GRU, Dropout, LSTM, LeakyReLU, Lambda, LayerNormalization
 from tensorflow.keras import regularizers
@@ -10,13 +15,12 @@ from tensorflow.keras.backend import l2_normalize
 from .utils import fast_mvnorm_diagonal_logprob, unroll_data, get_prior_scale, delete_object_attributes
 from scipy.stats import norm
 
-print("TensorFlow Version: {}".format(tf.__version__))
-
 ### there are a ~ton~ of tf warnings from Keras, suppress them here
 import os
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import logging
+
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get('LOGLEVEL', logging.INFO))
 # must have a handler, otherwise logging will use lastresort
@@ -446,6 +450,39 @@ class LinearEvent(object):
         if np.shape(self.prediction_errors)[0] > 1:
             self.Sigma = map_variance(self.prediction_errors, self.var_df0, self.var_scale0)
 
+    def get_likelihood(self, k0, k_prev, x_prev, x_curr):
+        current_event = (k0 == k_prev)
+        if current_event:
+            assert x_prev is not None
+            # _predict_next does account for past scenes in history with hidden=True
+            x_hat_active, lik = self.log_likelihood_next(x_prev, x_curr, hidden=True)
+
+            # special case for the possibility of returning to the start of the current event
+            # lik_restart_event = self.log_likelihood_f0(x_curr)
+            # added on july_26, manually tested and the logic is correct
+            # hidden=False, past scenes don't influence here
+            _, lik_restart_event = self.log_likelihood_next(x_prev, x_curr, hidden=False)
+            return k0, (x_hat_active, lik, lik_restart_event)
+        else:
+            # lik = self.log_likelihood_f0(x_curr)
+            # hidden=False, past scenes don't influence here
+            if x_prev is None:  # start of each run
+                _, lik = self.log_likelihood_next(x_curr, x_curr, hidden=False)
+            else:
+                _, lik = self.log_likelihood_next(x_prev, x_curr, hidden=False)
+            return k0, lik
+
+    def get_n_epochs(self):
+        return self.n_epochs
+
+    def set_n_epochs(self, n_epochs):
+        self.n_epochs = n_epochs
+
+    def get_model_weights(self):
+        return self.model_weights
+
+    def set_model_weights(self, weights):
+        self.model_weights = weights
 
 class NonLinearEvent(LinearEvent):
 
