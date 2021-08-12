@@ -297,6 +297,10 @@ class SEM(object):
                     # This line trigger dynamic importing
                     new_model = self.f_class_remote.remote(self.d, **self.f_opts)
                     new_model.init_model.remote()
+                    new_model.do_reset_weights.remote()
+                    # if instead the following, model weights will be different from the above, which is weird!
+                    # model = ray.get(new_model.init_model.remote())
+                    # new_model.set_model.remote(model)
                     self.event_models[k0] = new_model
                 jobs.append(self.event_models[k0].get_likelihood.remote(k0, **kwargs))
                 # Chunking only constrain cpu usage, memory usage grows as self.f_class_remote.remote(self.d, **self.f_opts)
