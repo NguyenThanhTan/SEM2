@@ -623,6 +623,7 @@ class RecurrentLinearEvent(LinearEvent):
             self.init_weights = self.model.get_weights()
         else:
             self.model.set_weights(self.init_weights)
+            self.model_weights = self.model.get_weights()
 
     # initialize model once so we can then update it online
     def _compile_model(self):
