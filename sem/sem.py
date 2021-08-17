@@ -285,7 +285,7 @@ class SEM(object):
             kwargs = {'x_curr': x_curr, 'x_prev': self.x_prev, 'k_prev': self.k_prev}
             jobs = []
             array_res = []
-            for k0 in active:
+            for count, k0 in enumerate(active):
                 if k0 not in self.event_models.keys():
                     # This line trigger dynamic importing
                     new_model = self.f_class_remote.remote(self.d, **self.f_opts)
@@ -298,10 +298,12 @@ class SEM(object):
                 jobs.append(self.event_models[k0].get_likelihood.remote(k0, **kwargs))
                 # Chunking only constrain cpu usage, memory usage grows as self.f_class_remote.remote(self.d, **self.f_opts)
                 # 300MB per Actor.
-                if len(jobs) == 16:
+                # Actors will exit when the original handle to the actor is out of scope,
+                # thus, execute the jobs here instead of out of the loop
+                if (len(jobs) == 16) or (count == len(active) - 1):
+                    assert count == k0, f"Sanity check failed, count={count} != k0={k0}"
                     array_res = array_res + ray.get(jobs)
                     jobs = []
-            array_res = array_res + ray.get(jobs)
             for (k0, pack) in array_res:
                 if k0 == self.k_prev:
                     x_hat_active, lik[k0], lik_restart_event = pack
