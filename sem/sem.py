@@ -280,10 +280,10 @@ class SEM(object):
             for k0 in active:
                 if k0 not in self.event_models.keys():
                     new_model = self.f_class(self.d, **self.f_opts)
-                    if self.model is None:
-                        self.model = new_model.init_model()
-                    else:
-                        new_model.set_model(self.model)
+                    # if self.model is None:
+                    rnn_model = new_model.init_model()
+                    # else:
+                    new_model.set_model(rnn_model)
                     self.event_models[k0] = new_model
                     new_model = None  # clear the new model variable (but not the model itself) from memory
 
