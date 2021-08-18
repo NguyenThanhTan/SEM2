@@ -316,7 +316,17 @@ class LinearEvent(object):
         # return fast_mvnorm_diagonal_logprob(Xp.reshape(-1) - Xp_hat.reshape(-1), self.Sigma)
         return LL
 
-    def log_likelihood_next(self, X, Xp):
+    def log_likelihood_next(self, X, Xp, hidden=True):
+        """
+
+        Args:
+            X: previous scene vector
+            Xp: current scene vector
+            hidden: whether to carry over hidden unit activations while predicting the current scene vector. True means carry
+
+        Returns:
+
+        """
         if not self.f_is_trained:
             if self.prior_probability:
                 return self.prior_probability
@@ -326,9 +336,19 @@ class LinearEvent(object):
                 LL /= self.d
                 logger.debug(f'f_next is not trained, likelihood?? {LL}')
                 # return norm(0, self.variance_prior_mode ** 0.5).logpdf(Xp).sum()
-                return LL
+                # it doesn't make sense to predict from a random model, comment to save time
+                # Xp_hat = self.predict_next(X)
+                return None, LL
 
-        Xp_hat = self.predict_next(X)
+        if hidden:
+            Xp_hat = self.predict_next(X)
+        else:
+            ''' 
+            mimic the below to inactivate hidden units carried over from seeing previous scenes in the history.
+            def _predict_f0(self):
+                return self.predict_next_generative(self.filler_vector)
+            '''
+            Xp_hat = self.predict_next_generative(X)
         LL = fast_mvnorm_diagonal_logprob(Xp.reshape(-1) - Xp_hat.reshape(-1), self.Sigma)
         # tan's code to scale
         LL /= self.d
@@ -673,6 +693,10 @@ class RecurrentLinearEvent(LinearEvent):
 
         if self.batch_update:
             def draw_sample_pair():
+                # it's good to try 20% online sampling and 80% batch sampling
+                # not tested, added on july 14-th
+                # if np.random.rand() < 0.2:
+                #     return self.training_pairs[-1]
                 # draw a random cluster for the history
                 idx = np.random.randint(n_pairs)
                 return self.training_pairs[idx]

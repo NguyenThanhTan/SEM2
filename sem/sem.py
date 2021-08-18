@@ -229,8 +229,8 @@ class SEM(object):
         # tan's code to determine the predictive strength of the model
         restart_indices = []
         repeat_indices = []
-        frame_dynamics = dict(restart_lik=[], repeat_lik=[], new_lik=[], old_lik=[], restart_prior=[], repeat_prior=[],
-                              new_prior=[], old_prior=[], post=[])
+        # frame_dynamics = dict(restart_lik=[], repeat_lik=[], new_lik=[], old_lik=[], restart_prior=[], repeat_prior=[],
+        #                       new_prior=[], old_prior=[], post=[])
 
         #
         log_like = np.zeros((n, self.k)) - np.inf
@@ -257,9 +257,12 @@ class SEM(object):
                         new_model.set_model(self.model)
                     self.general_event_model = new_model
                     new_model = None  # clear the new model variable (but not the model itself) from memory
-                if self.x_prev is None:
+                # for the world model, new token at the start of each new run
+                if self.x_prev is None:  # start of each run
                     self.general_event_model.new_token()
-                    self.general_event_model.update_f0(x_curr)
+                    # self.general_event_model.update_f0(x_curr)
+                    # assume that the previous scene is the same scene, so that not using update_f0
+                    self.general_event_model.update(x_curr, x_curr)
                 else:
                     self.general_event_model.update(self.x_prev, x_curr)
 
@@ -291,18 +294,26 @@ class SEM(object):
                 current_event = (k0 == self.k_prev)
 
                 logger.debug(f'\nk0 {k0} vs k_prev {self.k_prev}')
+                # Calculate likelihoods for all events
+                # hidden=True, model.log_likelihood_next will concat model.x_history[-1] to self.x_prev to predict x_hat,
+                # which is inappropriate for all old events, except the current event
                 if current_event:
                     assert self.x_prev is not None
-                    x_hat_active, lik[k0] = model.log_likelihood_next(self.x_prev, x_curr)
+                    # _predict_next does account for past scenes in history with hidden=True
+                    x_hat_active, lik[k0] = model.log_likelihood_next(self.x_prev, x_curr, hidden=True)
 
                     # special case for the possibility of returning to the start of the current event
-                    lik_restart_event = model.log_likelihood_f0(x_curr)
-                    # tan's code to test what if we think about restarting already happen previously.
-                    # lik_restart_event = lik[k0]
+                    # lik_restart_event = model.log_likelihood_f0(x_curr)
+                    # added on july_26, manually tested and the logic is correct
+                    # hidden=False, past scenes don't influence here
+                    _, lik_restart_event = model.log_likelihood_next(self.x_prev, x_curr, hidden=False)
                 else:
-                    lik[k0] = model.log_likelihood_f0(x_curr)
-                    # tan's code to test what if we think about restarting already happen previously.
-                    # lik[k0] = model.log_likelihood_next(self.x_prev, x_curr)
+                    # lik[k0] = model.log_likelihood_f0(x_curr)
+                    # hidden=False, past scenes don't influence here
+                    if self.x_prev is None:  # start of each run
+                        _, lik[k0] = model.log_likelihood_next(x_curr, x_curr, hidden=False)
+                    else:
+                        _, lik[k0] = model.log_likelihood_next(self.x_prev, x_curr, hidden=False)
             # determine the event identity (without worrying about event breaks for now)
             _post = np.log(prior[:len(active)]) / self.d + lik
             if ii > 0:
@@ -412,10 +423,9 @@ class SEM(object):
                 if not event_boundary:
                     # we're in the same event -> update using previous scene
                     assert self.x_prev is not None
-                    # tan's code to not training while inferring
                     self.event_models[k].update(self.x_prev, x_curr)
                 else:
-                    # new event and not the only event
+                    # new event and not the only event, initialize by a world model
                     if k == len(active) - 1 and k != 0:
                         # increase n_epochs for new events
                         self.event_models[k].n_epochs = int(self.event_models[k].n_epochs * 5)
@@ -427,20 +437,30 @@ class SEM(object):
 
                         # we're in a new event token -> update the initialization point only
                         self.event_models[k].new_token()
-                        self.event_models[k].update_f0(x_curr)
+                        # self.event_models[k].update_f0(x_curr)
+                        if self.x_prev is None:  # start of each run
+                            # assume that the previous scene is the same scene, so that not using update_f0
+                            self.event_models[k].update(x_curr, x_curr)
+                        else:
+                            self.event_models[k].update(self.x_prev, x_curr)
                         # restore n_epochs
                         self.event_models[k].n_epochs = int(self.event_models[k].n_epochs / 5)
 
                         # update f0 for general model as well
-                        x_train_example = np.reshape(
-                            unroll_data(self.general_event_model.filler_vector.reshape((1, self.d)), self.general_event_model.t)[-1, :, :],
-                            (1, self.general_event_model.t, self.d)
-                        )
-                        self.general_event_model.training_pairs.append(tuple([x_train_example, x_curr.reshape((1, self.d))]))
+                        # x_train_example = np.reshape(
+                        #     unroll_data(self.general_event_model.filler_vector.reshape((1, self.d)), self.general_event_model.t)[-1, :, :],
+                        #     (1, self.general_event_model.t, self.d)
+                        # )
+                        # self.general_event_model.training_pairs.append(tuple([x_train_example, x_curr.reshape((1, self.d))]))
                     else:
                         # we're in a new event token -> update the initialization point only
                         self.event_models[k].new_token()
-                        self.event_models[k].update_f0(x_curr)
+                        # self.event_models[k].update_f0(x_curr)
+                        if self.x_prev is None:  # start of each run
+                            # assume that the previous scene is the same scene, so that not using update_f0
+                            self.event_models[k].update(x_curr, x_curr)
+                        else:
+                            self.event_models[k].update(self.x_prev, x_curr)
 
             self.x_prev = x_curr  # store the current scene for next trial
             if k == len(active) - 1 and not train:
