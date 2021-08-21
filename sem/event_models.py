@@ -175,6 +175,7 @@ class LinearEvent(object):
 
     def init_model(self):
         self._compile_model()
+        self.do_reset_weights()
         self.model_weights = self.model.get_weights()
         return self.model
 
