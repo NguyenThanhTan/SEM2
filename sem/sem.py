@@ -283,7 +283,6 @@ class SEM(object):
                     # if self.model is None:
                     rnn_model = new_model.init_model()
                     # else:
-                    new_model.set_model(rnn_model)
                     self.event_models[k0] = new_model
                     new_model = None  # clear the new model variable (but not the model itself) from memory
 
