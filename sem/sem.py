@@ -221,6 +221,12 @@ class SEM(object):
 
         # update internal state
         self._update_state(x, k)
+        if self.general_event_model is None:
+            logger.info(f'Creating World model for initializations!')
+            new_model = self.f_class(self.d, **self.f_opts)
+            new_model.init_model()
+            self.general_event_model = new_model
+            new_model = None  # clear the new model variable (but not the model itself) from memory
         del k  # use self.k and self.d
 
         n = x.shape[0]
@@ -261,14 +267,6 @@ class SEM(object):
             x_curr = x[ii, :].copy()
             # parallel training a general event model
             if train:
-                if self.general_event_model is None:
-                    new_model = self.f_class(self.d, **self.f_opts)
-                    if self.model is None:
-                        self.model = new_model.init_model()
-                    else:
-                        new_model.set_model(self.model)
-                    self.general_event_model = new_model
-                    new_model = None  # clear the new model variable (but not the model itself) from memory
                 # for the world model, new token at the start of each new run
                 if self.x_prev is None:  # start of each run
                     self.general_event_model.new_token()
@@ -332,33 +330,17 @@ class SEM(object):
                     logger.debug(f'\nlog_REPEAT>log_restart event_type {self.k_prev}')
                 _post[self.k_prev] = np.max([repeat_prob, restart_prob])
 
-                # readout probabilities, these are in raw scales so we can know the magnitude.
-                # frame_dynamics['restart_lik'].append(lik_restart_event)
-                # frame_dynamics['repeat_lik'].append(lik[self.k_prev])
-                # # lik and prior and _post will be modified later, slicing to copy here
-                # old_liks = [l for l in lik[:len(active) - 1]]
-                # frame_dynamics['old_lik'].append(np.array(old_liks, dtype=float))
-                # frame_dynamics['new_lik'].append(lik[len(active) - 1])
-                #
-                # frame_dynamics['restart_prior'].append(np.log(prior[self.k_prev] - self.lmda) / self.d)
-                # frame_dynamics['repeat_prior'].append(np.log(prior[self.k_prev]) / self.d)
-                # old_priors = [p for p in prior[:len(active) - 1]]
-                # frame_dynamics['old_prior'].append(np.log(np.array(old_priors, dtype=float)) / self.d)
-                # frame_dynamics['new_prior'].append(np.log(prior[len(active) - 1]) / self.d)
-                # all_posteriors = [p for p in _post[:len(active)]]
-                # frame_dynamics['post'].append(all_posteriors)
             logger.debug(f'\nlog_prior {np.log(prior[:len(active)]) / self.d}'
                          f'\nlog_lik {lik:}'
                          f'\nlog_post {_post:}')
 
             # get the MAP cluster and only update it
-            k = np.argmax(_post)  # MAP cluster
+            # during evaluation, not consider creating a new event.
+            if not train:
+                k = np.argmax(_post[:-1])  # MAP cluster
+            else:
+                k = np.argmax(_post)  # MAP cluster
             logger.debug(f'\nEvent type {k}')
-            if k == self.k_prev:
-                if restart_prob > repeat_prob:
-                    restart_indices.append(ii)
-                else:
-                    repeat_indices.append(ii)
             if k != self.k_prev:
                 logger.debug(f'Boundary Switching')
             # determine whether there was a boundary
@@ -452,12 +434,6 @@ class SEM(object):
                         # self.event_models[k].n_epochs = int(self.event_models[k].n_epochs / 5)
                         self.event_models[k].set_n_epochs.remote(int(ray.get(self.event_models[k].get_n_epochs.remote()) / 5))
 
-                        # update f0 for general model as well
-                        # x_train_example = np.reshape(
-                        #     unroll_data(self.general_event_model.filler_vector.reshape((1, self.d)), self.general_event_model.t)[-1, :, :],
-                        #     (1, self.general_event_model.t, self.d)
-                        # )
-                        # self.general_event_model.training_pairs.append(tuple([x_train_example, x_curr.reshape((1, self.d))]))
                     else:
                         # we're in a new event token -> update the initialization point only
                         self.event_models[k].new_token.remote()
@@ -469,10 +445,7 @@ class SEM(object):
                             self.event_models[k].update.remote(self.x_prev, x_curr)
 
             self.x_prev = x_curr  # store the current scene for next trial
-            if k == len(active) - 1 and not train:
-                logger.warning(f'Creating a new event event with alfa={self.alfa} while doing validation, ignoring!!!')
-            else:
-                self.k_prev = k  # store the current event for the next trial
+            self.k_prev = k  # store the current event for the next trial
 
         # calculate Bayesian Surprise
         # tan's intepretation (might be wrong):
@@ -498,10 +471,7 @@ class SEM(object):
         # self.results.log_loss = logsumexp(log_like + log_prior, axis=1)
         # self.results.log_boundary_probability = log_boundary_probability
 
-        # self.results.restart_indices = restart_indices
-        # self.results.repeat_indices = repeat_indices
         self.results.boundaries = boundaries
-        # self.results.frame_dynamics = frame_dynamics
         self.results.c = self.c.copy()
         # self.results.Sigma = {i: self.event_models[i].Sigma for i in self.event_models.keys()}
         if minimize_memory:
