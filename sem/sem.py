@@ -209,6 +209,12 @@ class SEM(object):
 
         # update internal state
         self._update_state(x, k)
+        if self.general_event_model is None:
+            logger.info(f'Creating World model for initializations!')
+            new_model = self.f_class(self.d, **self.f_opts)
+            new_model.init_model()
+            self.general_event_model = new_model
+            new_model = None  # clear the new model variable (but not the model itself) from memory
         del k  # use self.k and self.d
 
         n = x.shape[0]
@@ -249,14 +255,6 @@ class SEM(object):
             x_curr = x[ii, :].copy()
             # parallel training a general event model
             if train:
-                if self.general_event_model is None:
-                    new_model = self.f_class(self.d, **self.f_opts)
-                    if self.model is None:
-                        self.model = new_model.init_model()
-                    else:
-                        new_model.set_model(self.model)
-                    self.general_event_model = new_model
-                    new_model = None  # clear the new model variable (but not the model itself) from memory
                 # for the world model, new token at the start of each new run
                 if self.x_prev is None:  # start of each run
                     self.general_event_model.new_token()
