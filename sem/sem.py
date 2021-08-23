@@ -1,6 +1,11 @@
+# If using multiprocessing, this module will be imported dynamically
 print('Import sem.py')
 import numpy as np
+
+np.random.seed(1234)
 import tensorflow as tf
+
+tf.random.set_seed(1234)
 from scipy.special import logsumexp
 from tqdm import tqdm
 from .event_models import GRUEvent
@@ -405,45 +410,18 @@ class SEM(object):
                     assert self.x_prev is not None
                     self.event_models[k].update.remote(self.x_prev, x_curr)
                 else:
-                    # new event and not the only event, initialize by a world model
-                    if k == len(active) - 1 and k != 0:
-                        # increase n_epochs for new events
-                        # self.event_models[k].n_epochs = int(self.event_models[k].n_epochs * 5)
-                        self.event_models[k].set_n_epochs.remote(int(ray.get(self.event_models[k].get_n_epochs.remote()) * 5))
+                    # set weights based on the general event model,
+                    # always use .model_weights instead of .model.get_weights() or .model.set_weights(...)
+                    # because .model_weights is guaranteed to be up-to-date.
+                    self.event_models[k].set_model_weights.remote(self.general_event_model.model_weights)
 
-                        # set weights based on the general event model,
-                        # always use .model_weights instead of .model.get_weights() or .model.set_weights(...)
-                        # because .model is a common model used by all event models, its weights are of the last model being used
-                        # self.event_models[k].model_weights = self.general_event_model.model_weights
-                        self.event_models[k].set_model_weights.remote(self.general_event_model.model_weights)
-
-                        # we're in a new event token -> update the initialization point only
-                        self.event_models[k].new_token.remote()
-                        # self.event_models[k].update_f0(x_curr)
-                        if self.x_prev is None:  # start of each run
-                            # assume that the previous scene is the same scene, so that not using update_f0
-                            self.event_models[k].update.remote(x_curr, x_curr)
-                        else:
-                            self.event_models[k].update.remote(self.x_prev, x_curr)
-                        # restore n_epochs
-                        # self.event_models[k].n_epochs = int(self.event_models[k].n_epochs / 5)
-                        self.event_models[k].set_n_epochs.remote(int(ray.get(self.event_models[k].get_n_epochs.remote()) / 5))
-
-                        # update f0 for general model as well
-                        # x_train_example = np.reshape(
-                        #     unroll_data(self.general_event_model.filler_vector.reshape((1, self.d)), self.general_event_model.t)[-1, :, :],
-                        #     (1, self.general_event_model.t, self.d)
-                        # )
-                        # self.general_event_model.training_pairs.append(tuple([x_train_example, x_curr.reshape((1, self.d))]))
+                    # create a new token to avoid mixing with a distant past
+                    self.event_models[k].new_token.remote()
+                    if self.x_prev is None:  # start of each run
+                        # assume that the previous scene is the same scene
+                        self.event_models[k].update.remote(x_curr, x_curr)
                     else:
-                        # we're in a new event token -> update the initialization point only
-                        self.event_models[k].new_token.remote()
-                        # self.event_models[k].update_f0(x_curr)
-                        if self.x_prev is None:  # start of each run
-                            # assume that the previous scene is the same scene, so that not using update_f0
-                            self.event_models[k].update.remote(x_curr, x_curr)
-                        else:
-                            self.event_models[k].update.remote(self.x_prev, x_curr)
+                        self.event_models[k].update.remote(self.x_prev, x_curr)
 
             self.x_prev = x_curr  # store the current scene for next trial
             self.k_prev = k  # store the current event for the next trial
