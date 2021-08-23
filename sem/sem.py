@@ -1,5 +1,5 @@
 # If using multiprocessing, this module will be imported dynamically
-print('Run sem.py')
+print('Import sem.py')
 import numpy as np
 
 np.random.seed(1234)

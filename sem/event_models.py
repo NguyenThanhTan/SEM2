@@ -1,5 +1,5 @@
 # If using multiprocessing, this module will be imported dynamically
-print('Runt  event_models.py')
+print('Import  event_models.py')
 import numpy as np
 
 np.random.seed(1234)
