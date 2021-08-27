@@ -1,7 +1,6 @@
+print('Import sem.py')
 import numpy as np
-np.random.seed(1234)
 import tensorflow as tf
-tf.random.set_seed(1234)
 from scipy.special import logsumexp
 from tqdm import tqdm
 from .event_models import GRUEvent

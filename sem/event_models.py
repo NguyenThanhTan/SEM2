@@ -1,7 +1,8 @@
-import tensorflow as tf
-tf.random.set_seed(1234)
+# If using multiprocessing, this module will be imported dynamically
+print('Import  event_models.py')
 import numpy as np
-np.random.seed(1234)
+import tensorflow as tf
+print(f"{__file__}: TensorFlow Version: {tf.__version__}")
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Activation, SimpleRNN, GRU, Dropout, LSTM, LeakyReLU, Lambda, LayerNormalization
 from tensorflow.keras import regularizers
@@ -9,8 +10,6 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.backend import l2_normalize
 from .utils import fast_mvnorm_diagonal_logprob, unroll_data, get_prior_scale, delete_object_attributes
 from scipy.stats import norm
-
-print("TensorFlow Version: {}".format(tf.__version__))
 
 ### there are a ~ton~ of tf warnings from Keras, suppress them here
 import os
