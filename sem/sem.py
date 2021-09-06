@@ -1,4 +1,3 @@
-# If using multiprocessing, this module will be imported dynamically
 print('Import sem.py')
 import numpy as np
 import tensorflow as tf
