@@ -83,6 +83,9 @@ class SEM(object):
 
         # a general event model to initialize new events
         self.general_event_model = None
+        self.general_event_model_x2 = None
+        self.general_event_model_x3 = None
+        self.general_event_model_yoke = None
 
     def pretrain(self, x, event_types, event_boundaries, progress_bar=True, leave_progress_bar=True):
         """
@@ -222,6 +225,30 @@ class SEM(object):
             new_model.init_model()
             self.general_event_model = new_model
             new_model = None  # clear the new model variable (but not the model itself) from memory
+        if self.general_event_model_x2 is None:
+            logger.info(f'Creating x2 World model for initializations!')
+            self.f_opts['n_hidden'] = int(self.f_opts['n_hidden'] * 2)
+            new_model = self.f_class(self.d, **self.f_opts)
+            new_model.init_model()
+            self.general_event_model_x2 = new_model
+            new_model = None  # clear the new model variable (but not the model itself) from memory
+            self.f_opts['n_hidden'] = int(self.f_opts['n_hidden'] / 2)
+        if self.general_event_model_x3 is None:
+            logger.info(f'Creating x3 World model for initializations!')
+            self.f_opts['n_hidden'] = int(self.f_opts['n_hidden'] * 3)
+            new_model = self.f_class(self.d, **self.f_opts)
+            new_model.init_model()
+            self.general_event_model_x3 = new_model
+            new_model = None  # clear the new model variable (but not the model itself) from memory
+            self.f_opts['n_hidden'] = int(self.f_opts['n_hidden'] / 3)
+        if self.general_event_model_yoke is None:
+            logger.info(f'Creating yoke World model for initializations!')
+            self.f_opts['n_hidden'] = int(self.f_opts['n_hidden'] * 3)
+            new_model = self.f_class(self.d, **self.f_opts)
+            new_model.init_model()
+            self.general_event_model_yoke = new_model
+            new_model = None  # clear the new model variable (but not the model itself) from memory
+            self.f_opts['n_hidden'] = int(self.f_opts['n_hidden'] / 3)
         del k  # use self.k and self.d
 
         n = x.shape[0]
@@ -230,7 +257,12 @@ class SEM(object):
         # if not minimize_memory:
         post = np.zeros((n, self.k))
         pe = np.zeros(np.shape(x)[0])
+        pe_w = np.zeros(np.shape(x)[0])
+        pe_w2 = np.zeros(np.shape(x)[0])
+        pe_w3 = np.zeros(np.shape(x)[0])
+        pe_yoke = np.zeros(np.shape(x)[0])
         x_hat = np.zeros(np.shape(x))
+        x_hat_w2_array = np.zeros(np.shape(x))
         log_boundary_probability = np.zeros(np.shape(x)[0])
         # tan's code to encode types of boundaries for visualization
         boundaries = np.zeros((n,))
@@ -260,16 +292,16 @@ class SEM(object):
         for ii in my_it(n):
 
             x_curr = x[ii, :].copy()
-            # parallel training a general event model
-            if train:
-                # for the world model, new token at the start of each new run
-                if self.x_prev is None:  # start of each run
-                    self.general_event_model.new_token()
-                    # self.general_event_model.update_f0(x_curr)
-                    # assume that the previous scene is the same scene, so that not using update_f0
-                    self.general_event_model.update(x_curr, x_curr)
-                else:
-                    self.general_event_model.update(self.x_prev, x_curr)
+            # get predictions from world model to extract prediction error
+            if ii > 0:
+                x_hat_w = self.general_event_model.predict_next(self.x_prev)
+                x_hat_w2 = self.general_event_model_x2.predict_next(self.x_prev)
+                x_hat_w3 = self.general_event_model_x3.predict_next(self.x_prev)
+                x_hat_yoke = self.general_event_model_yoke.predict_next(self.x_prev)
+                pe_w[ii] = np.linalg.norm(x_curr - x_hat_w)
+                pe_w2[ii] = np.linalg.norm(x_curr - x_hat_w2)
+                pe_w3[ii] = np.linalg.norm(x_curr - x_hat_w3)
+                pe_yoke[ii] = np.linalg.norm(x_curr - x_hat_yoke)
 
             # calculate sCRP prior
             prior = self._calculate_unnormed_sCRP(self.k_prev)
@@ -300,7 +332,7 @@ class SEM(object):
                 # 300MB per Actor.
                 # Actors will exit when the original handle to the actor is out of scope,
                 # thus, execute the jobs here instead of out of the loop
-                if (len(jobs) == 8) or (count == len(active) - 1):
+                if (len(jobs) == 16) or (count == len(active) - 1):
                     assert count == k0, f"Sanity check failed, count={count} != k0={k0}"
                     array_res = array_res + ray.get(jobs)
                     jobs = []
@@ -394,6 +426,7 @@ class SEM(object):
                     # model = self.event_models[self.k_prev]
                     x_hat[ii, :] = x_hat_active
                     pe[ii] = np.linalg.norm(x_curr - x_hat_active)
+                    x_hat_w2_array[ii, :] = x_hat_w2
                     # surprise[ii] = log_like[ii, self.k_prev]
 
             self.c[k] += self.kappa  # update counts
@@ -417,6 +450,31 @@ class SEM(object):
                         self.event_models[k].update.remote(x_curr, x_curr)
                     else:
                         self.event_models[k].update.remote(self.x_prev, x_curr)
+            # parallel training a general event model
+            if train:
+                # for the world model, new token at the start of each new run
+                if self.x_prev is None:  # start of each run
+                    self.general_event_model.new_token()
+                    self.general_event_model_x2.new_token()
+                    self.general_event_model_x3.new_token()
+                    # self.general_event_model.update_f0(x_curr)
+                    # assume that the previous scene is the same scene, so that not using update_f0
+                    self.general_event_model.update(x_curr, x_curr)
+                    self.general_event_model_x2.update(x_curr, x_curr)
+                    self.general_event_model_x3.update(x_curr, x_curr)
+                else:
+                    self.general_event_model.update(self.x_prev, x_curr)
+                    self.general_event_model_x2.update(self.x_prev, x_curr)
+                    self.general_event_model_x3.update(self.x_prev, x_curr)
+                # for yoke model, need to reset hidden units by creating a new token (no previous scenes).
+                if not event_boundary:
+                    self.general_event_model_yoke.update(self.x_prev, x_curr)
+                else:
+                    self.general_event_model_yoke.new_token()
+                    if self.x_prev is None:  # start of each run:
+                        self.general_event_model_yoke.update(x_curr, x_curr)
+                    else:
+                        self.general_event_model_yoke.update(self.x_prev, x_curr)
 
             self.x_prev = x_curr  # store the current scene for next trial
             self.k_prev = k  # store the current event for the next trial
@@ -433,6 +491,10 @@ class SEM(object):
         post = post[:, np.any(post != 0, axis=0)]
         self.results.post = post
         self.results.pe = pe
+        self.results.pe_w = pe_w
+        self.results.pe_w2 = pe_w2
+        self.results.pe_w3 = pe_w3
+        self.results.pe_yoke = pe_yoke
         self.results.surprise = surprise
         log_like = log_like[:, np.any(log_like != -np.inf, axis=0)]
         self.results.log_like = log_like
@@ -442,6 +504,7 @@ class SEM(object):
         # self.results.e_hat = np.argmax(log_like + log_prior, axis=1)
         self.results.e_hat = np.argmax(post, axis=1)
         self.results.x_hat = x_hat
+        self.results.x_hat_w2 = x_hat_w2_array
         # self.results.log_loss = logsumexp(log_like + log_prior, axis=1)
         # self.results.log_boundary_probability = log_boundary_probability
 
