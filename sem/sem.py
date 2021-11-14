@@ -332,7 +332,7 @@ class SEM(object):
                 # 300MB per Actor.
                 # Actors will exit when the original handle to the actor is out of scope,
                 # thus, execute the jobs here instead of out of the loop
-                if (len(jobs) == 16) or (count == len(active) - 1):
+                if (len(jobs) == 8) or (count == len(active) - 1):
                     assert count == k0, f"Sanity check failed, count={count} != k0={k0}"
                     array_res = array_res + ray.get(jobs)
                     jobs = []

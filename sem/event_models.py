@@ -3,6 +3,10 @@ print('Import  event_models.py')
 import numpy as np
 import tensorflow as tf
 print(f"{__file__}: TensorFlow Version: {tf.__version__}")
+# these settings seem to limit # threads for each process (ray actor)
+# setting here instead of in the main program, since event_models.py is imported for each separate ray actor and not inherit.
+tf.config.threading.set_intra_op_parallelism_threads(1)
+tf.config.threading.set_inter_op_parallelism_threads(1)
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Activation, SimpleRNN, GRU, Dropout, LSTM, LeakyReLU, Lambda, LayerNormalization
 from tensorflow.keras import regularizers
