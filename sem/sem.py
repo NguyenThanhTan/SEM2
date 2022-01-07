@@ -262,7 +262,13 @@ class SEM(object):
         pe_w3 = np.zeros(np.shape(x)[0])
         pe_yoke = np.zeros(np.shape(x)[0])
         x_hat = np.zeros(np.shape(x))
+        x_hat_w_array = np.zeros(np.shape(x))
         x_hat_w2_array = np.zeros(np.shape(x))
+        x_hat_w3_array = np.zeros(np.shape(x))
+        after_relu_array = np.zeros(np.shape(x))
+        after_relu_w_array = np.zeros(np.shape(x))
+        after_relu_w2_array = np.zeros((np.shape(x)[0], (np.shape(x)[1] * 2)))
+        after_relu_w3_array = np.zeros((np.shape(x)[0], (np.shape(x)[1] * 3)))
         log_boundary_probability = np.zeros(np.shape(x)[0])
         # tan's code to encode types of boundaries for visualization
         boundaries = np.zeros((n,))
@@ -294,10 +300,10 @@ class SEM(object):
             x_curr = x[ii, :].copy()
             # get predictions from world model to extract prediction error
             if ii > 0:
-                x_hat_w = self.general_event_model.predict_next(self.x_prev)
-                x_hat_w2 = self.general_event_model_x2.predict_next(self.x_prev)
-                x_hat_w3 = self.general_event_model_x3.predict_next(self.x_prev)
-                x_hat_yoke = self.general_event_model_yoke.predict_next(self.x_prev)
+                after_relu_w, x_hat_w = self.general_event_model.predict_next(self.x_prev)
+                after_relu_w2, x_hat_w2 = self.general_event_model_x2.predict_next(self.x_prev)
+                after_relu_w3, x_hat_w3 = self.general_event_model_x3.predict_next(self.x_prev)
+                after_relu_yoke, x_hat_yoke = self.general_event_model_yoke.predict_next(self.x_prev)
                 pe_w[ii] = np.linalg.norm(x_curr - x_hat_w)
                 pe_w2[ii] = np.linalg.norm(x_curr - x_hat_w2)
                 pe_w3[ii] = np.linalg.norm(x_curr - x_hat_w3)
@@ -338,7 +344,7 @@ class SEM(object):
                     jobs = []
             for (k0, pack) in array_res:
                 if k0 == self.k_prev:
-                    x_hat_active, lik[k0], lik_restart_event = pack
+                    after_relu, x_hat_active, lik[k0], lik_restart_event = pack
                 else:
                     lik[k0] = pack
 
@@ -427,6 +433,12 @@ class SEM(object):
                     x_hat[ii, :] = x_hat_active
                     pe[ii] = np.linalg.norm(x_curr - x_hat_active)
                     x_hat_w2_array[ii, :] = x_hat_w2
+                    x_hat_w3_array[ii, :] = x_hat_w3
+                    x_hat_w_array[ii, :] = x_hat_w
+                    after_relu_array[ii, :] = after_relu
+                    after_relu_w2_array[ii, :] = after_relu_w2
+                    after_relu_w3_array[ii, :] = after_relu_w3
+                    after_relu_w_array[ii, :] = after_relu_w
                     # surprise[ii] = log_like[ii, self.k_prev]
 
             self.c[k] += self.kappa  # update counts
@@ -503,8 +515,15 @@ class SEM(object):
         # Should derive e_hat from post, avoid two-sources problem.
         # self.results.e_hat = np.argmax(log_like + log_prior, axis=1)
         self.results.e_hat = np.argmax(post, axis=1)
+        self.results.x = x
         self.results.x_hat = x_hat
+        self.results.x_hat_w = x_hat_w_array
         self.results.x_hat_w2 = x_hat_w2_array
+        self.results.x_hat_w3 = x_hat_w3_array
+        self.results.after_relu = after_relu_array
+        self.results.after_relu_w = after_relu_w_array
+        self.results.after_relu_w2 = after_relu_w2_array
+        self.results.after_relu_w3 = after_relu_w3_array
         # self.results.log_loss = logsumexp(log_like + log_prior, axis=1)
         # self.results.log_boundary_probability = log_boundary_probability
 

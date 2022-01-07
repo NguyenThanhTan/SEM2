@@ -3,6 +3,7 @@ print('Import  event_models.py')
 import numpy as np
 import tensorflow as tf
 print(f"{__file__}: TensorFlow Version: {tf.__version__}")
+tf.keras.backend.set_floatx('float64')
 # these settings seem to limit # threads for each process (ray actor)
 # setting here instead of in the main program, since event_models.py is imported for each separate ray actor and not inherit.
 tf.config.threading.set_intra_op_parallelism_threads(1)
@@ -297,6 +298,7 @@ class LinearEvent(object):
     def _predict_f0(self):
         return self._predict_next(self.filler_vector)
 
+    # This function is for filler vector, thus deprecated in the current architecture
     def log_likelihood_f0(self, Xp):
 
         if not self.f0_is_trained:
@@ -343,22 +345,22 @@ class LinearEvent(object):
                 # return norm(0, self.variance_prior_mode ** 0.5).logpdf(Xp).sum()
                 # it doesn't make sense to predict from a random model, comment to save time
                 # Xp_hat = self.predict_next(X)
-                return None, LL
+                return None, None, LL
 
         if hidden:
-            Xp_hat = self.predict_next(X)
+            after_relu, Xp_hat = self.predict_next(X)
         else:
             ''' 
             mimic the below to inactivate hidden units carried over from seeing previous scenes in the history.
             def _predict_f0(self):
                 return self.predict_next_generative(self.filler_vector)
             '''
-            Xp_hat = self.predict_next_generative(X)
+            after_relu, Xp_hat = self.predict_next_generative(X)
         LL = fast_mvnorm_diagonal_logprob(Xp.reshape(-1) - Xp_hat.reshape(-1), self.Sigma)
         # tan's code to scale
         LL /= self.d
         logger.debug(f'f_next is trained, likelihood-repeat {LL}')
-        return Xp_hat, LL
+        return after_relu, Xp_hat, LL
 
     def log_likelihood_sequence(self, X, Xp):
         if not self.f_is_trained:
@@ -456,21 +458,21 @@ class LinearEvent(object):
         if current_event:
             assert x_prev is not None
             # _predict_next does account for past scenes in history with hidden=True
-            x_hat_active, lik = self.log_likelihood_next(x_prev, x_curr, hidden=True)
+            after_relu, x_hat_active, lik = self.log_likelihood_next(x_prev, x_curr, hidden=True)
 
             # special case for the possibility of returning to the start of the current event
             # lik_restart_event = self.log_likelihood_f0(x_curr)
             # added on july_26, manually tested and the logic is correct
             # hidden=False, past scenes don't influence here
-            _, lik_restart_event = self.log_likelihood_next(x_prev, x_curr, hidden=False)
-            return k0, (x_hat_active, lik, lik_restart_event)
+            _, _, lik_restart_event = self.log_likelihood_next(x_prev, x_curr, hidden=False)
+            return k0, (after_relu, x_hat_active, lik, lik_restart_event)
         else:
             # lik = self.log_likelihood_f0(x_curr)
             # hidden=False, past scenes don't influence here
             if x_prev is None:  # start of each run
-                _, lik = self.log_likelihood_next(x_curr, x_curr, hidden=False)
+                _, _, lik = self.log_likelihood_next(x_curr, x_curr, hidden=False)
             else:
-                _, lik = self.log_likelihood_next(x_prev, x_curr, hidden=False)
+                _, _, lik = self.log_likelihood_next(x_prev, x_curr, hidden=False)
             return k0, lik
 
     def get_n_epochs(self):
@@ -661,7 +663,15 @@ class RecurrentLinearEvent(LinearEvent):
         # logger.debug(f'_predict_next: x_history_len={len(self.x_history)}')
         x_test = self._unroll(x_test)
         # logger.debug(f'_predict_next: x_test {x_test.shape}')
-        return self.model.predict(x_test)
+        intermediate_input = x_test
+        for l in self.model.layers:
+            intermediate_output = l(intermediate_input)
+            logger.debug(f'{intermediate_input.shape} -> {l.name} -> {intermediate_output.shape}')
+            logger.debug(intermediate_output)
+            intermediate_input = intermediate_output
+            if 're_lu' in l.name:
+                break
+        return intermediate_output, self.model.predict(x_test)
 
     def _predict_f0(self):
         return self.predict_next_generative(self.filler_vector)
@@ -698,11 +708,14 @@ class RecurrentLinearEvent(LinearEvent):
             self.estimate()
             self.f_is_trained = True
 
+    # predict without previous scenes
     def predict_next_generative(self, X):
         self.model.set_weights(self.model_weights)
         X0 = np.reshape(unroll_data(X, self.t)[-1, :, :], (1, self.t, self.d))
         logger.debug(f'predict_next_generative: X0 {X0.shape}')
-        return self.model.predict(X0)
+        # we don't need intermediate output for experienced events, only current event, assign None to save computation
+        after_relu = None
+        return after_relu, self.model.predict(X0)
 
     # optional: run batch gradient descent on all past event clusters
     def estimate(self):
