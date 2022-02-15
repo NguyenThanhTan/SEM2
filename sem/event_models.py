@@ -656,12 +656,16 @@ class RecurrentLinearEvent(LinearEvent):
         assert np.ndim(X) == 1
         assert X.shape[0] == self.d
 
-        x_test = X.reshape((1, self.d))
+        # value of X is sent to ray process, thus read_only, copy to modify
+        # depriving input, either skeleton or semantics
+        x_test = np.copy(X.reshape((1, self.d)))
+        # x_test[0, 3:17] = 0
 
         # concatenate current example with history of last t-1 examples
         # this is for the recurrent part of the network
         # logger.debug(f'_predict_next: x_history_len={len(self.x_history)}')
         x_test = self._unroll(x_test)
+        # assert x_test[0, :, 3:17].sum() == 0
         # logger.debug(f'_predict_next: x_test {x_test.shape}')
         intermediate_input = x_test
         for l in self.model.layers:
@@ -688,7 +692,11 @@ class RecurrentLinearEvent(LinearEvent):
         assert Xp.ndim == 1
         assert Xp.shape[0] == self.d
 
-        x_example = X.reshape((1, self.d))
+        # value of X is sent to ray process, thus read_only, copy to modify
+        # depriving input, either skeleton or semantics
+        x_example = np.copy(X.reshape((1, self.d)))
+        # deprive emb
+        # x_example[0, 3:17] = 0
         xp_example = Xp.reshape((1, self.d))
 
         # concatenate the training example to the active event token
@@ -751,6 +759,10 @@ class RecurrentLinearEvent(LinearEvent):
                 #     return self.training_pairs[-1]
                 # draw a random cluster for the history
                 idx = np.random.randint(n_pairs)
+                if self.variance_window and n_pairs > self.variance_window:
+                    while n_pairs - idx > self.variance_window:
+                        logger.debug(f'Index {idx} is bigger than variance window={self.variance_window}, resampling...')
+                        idx = np.random.randint(n_pairs)
                 return self.training_pairs[idx]
         else:
             # for online sampling, just use the last training sample
@@ -772,6 +784,8 @@ class RecurrentLinearEvent(LinearEvent):
             self.model.train_on_batch(x_batch, xp_batch)
         self.model_weights = self.model.get_weights()
 
+    def decrease_lr(self):
+        self.compile_opts['optimizer'].learning_rate = self.compile_opts['optimizer'].learning_rate / 10
 
 class RecurrentEvent(RecurrentLinearEvent):
 

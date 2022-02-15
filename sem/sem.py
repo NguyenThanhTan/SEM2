@@ -527,6 +527,8 @@ class SEM(object):
         # self.results.log_loss = logsumexp(log_like + log_prior, axis=1)
         # self.results.log_boundary_probability = log_boundary_probability
 
+        # switching between video, not a real boundary
+        boundaries[0] = 0
         self.results.boundaries = boundaries
         self.results.c = self.c.copy()
         # self.results.Sigma = {i: self.event_models[i].Sigma for i in self.event_models.keys()}
