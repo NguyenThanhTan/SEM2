@@ -525,7 +525,7 @@ class SEM(object):
         self.results.after_relu_w2 = after_relu_w2_array
         self.results.after_relu_w3 = after_relu_w3_array
         # self.results.log_loss = logsumexp(log_like + log_prior, axis=1)
-        # self.results.log_boundary_probability = log_boundary_probability
+        self.results.log_boundary_probability = log_boundary_probability
 
         # switching between video, not a real boundary
         boundaries[0] = 0

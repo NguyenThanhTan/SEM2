@@ -695,8 +695,10 @@ class RecurrentLinearEvent(LinearEvent):
         # value of X is sent to ray process, thus read_only, copy to modify
         # depriving input, either skeleton or semantics
         x_example = np.copy(X.reshape((1, self.d)))
-        # deprive emb
+        # deprive skel
         # x_example[0, 3:17] = 0
+        # deprive emb
+        # x_example[0, 17:] = 0
         xp_example = Xp.reshape((1, self.d))
 
         # concatenate the training example to the active event token
