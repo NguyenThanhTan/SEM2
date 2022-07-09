@@ -69,6 +69,7 @@ class SEM(object):
         #
         self.k = 0  # maximum number of clusters (event types)
         self.c = np.array([])  # used by the sCRP prior -> running count of the clustering process
+        self.c_eval = np.zeros(shape=(10000,))
         self.d = None  # dimension of scenes
         self.event_models = dict()  # event model for each event type
         self.model = None  # this is the tensorflow model that gets used, the architecture is shared while weights are specific
@@ -333,6 +334,7 @@ class SEM(object):
                     # model = ray.get(new_model.init_model.remote())
                     # new_model.set_model.remote(model)
                     self.event_models[k0] = new_model
+                    self.event_models[k0].set_model_weights.remote(self.general_event_model.model_weights)
                 jobs.append(self.event_models[k0].get_likelihood.remote(k0, **kwargs))
                 # Chunking only constrain cpu usage, memory usage grows as self.f_class_remote.remote(self.d, **self.f_opts)
                 # 300MB per Actor.
@@ -442,6 +444,8 @@ class SEM(object):
                     # surprise[ii] = log_like[ii, self.k_prev]
 
             self.c[k] += self.kappa  # update counts
+            if not train:
+                self.c_eval[k] += 1
             # tan's code to not training while inferring
             if train:
                 # update event model
@@ -453,10 +457,15 @@ class SEM(object):
                     # set weights based on the general event model,
                     # always use .model_weights instead of .model.get_weights() or .model.set_weights(...)
                     # because .model_weights is guaranteed to be up-to-date.
-                    self.event_models[k].set_model_weights.remote(self.general_event_model.model_weights)
+                    # event models are always general event models if
+                    # the set_model_weights is here instead of when the new event model was created
+                    # if this line is commented, new event models are initialized to random weights.
+                    # self.event_models[k].set_model_weights.remote(self.general_event_model.model_weights)
 
                     # create a new token to avoid mixing with a distant past
                     self.event_models[k].new_token.remote()
+                    # re-add filler vector, need to update and recompute f0
+                    # self.event_models[k].update_f0.remote(x_curr)
                     if self.x_prev is None:  # start of each run
                         # assume that the previous scene is the same scene
                         self.event_models[k].update.remote(x_curr, x_curr)
@@ -531,6 +540,7 @@ class SEM(object):
         boundaries[0] = 0
         self.results.boundaries = boundaries
         self.results.c = self.c.copy()
+        self.results.c_eval = self.c_eval.copy()
         # self.results.Sigma = {i: self.event_models[i].Sigma for i in self.event_models.keys()}
         if minimize_memory:
             self.clear_event_models()
