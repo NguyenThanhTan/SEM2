@@ -1,4 +1,7 @@
-print('Import sem.py')
+import logging
+# no need to set handler here, since we already set handler in __init__, this child logger inherit that.
+logger = logging.getLogger(__name__)
+logger.info('Import sem.py')
 import numpy as np
 import tensorflow as tf
 from scipy.special import logsumexp
@@ -15,17 +18,6 @@ import ray
 import os
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-import logging
-
-logger = logging.getLogger(__name__)
-logger.setLevel(os.environ.get('LOGLEVEL', logging.INFO))
-# must have a handler, otherwise logging will use lastresort
-c_handler = logging.StreamHandler()
-LOGFORMAT = '%(name)s - %(levelname)s - %(message)s'
-# c_handler.setFormatter(logging.Formatter('%(name)s - %(levelname)s - %(message)s'))
-c_handler.setFormatter(logging.Formatter(LOGFORMAT))
-logger.addHandler(c_handler)
-logger.debug('test sem')
 
 
 class Results(object):

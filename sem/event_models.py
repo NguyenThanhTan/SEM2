@@ -1,8 +1,11 @@
 # If using multiprocessing, this module will be imported dynamically
-print('Import  event_models.py')
+import logging
+# no need to set handler here, since we already set handler in __init__, this child logger inherit that.
+logger = logging.getLogger(__name__)
+logger.info('Import  event_models.py')
 import numpy as np
 import tensorflow as tf
-print(f"{__file__}: TensorFlow Version: {tf.__version__}")
+logger.info(f"{__file__}: TensorFlow Version: {tf.__version__}")
 tf.keras.backend.set_floatx('float64')
 # these settings seem to limit # threads for each process (ray actor)
 # setting here instead of in the main program, since event_models.py is imported for each separate ray actor and not inherit.
@@ -20,17 +23,6 @@ from scipy.stats import norm
 import os
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-import logging
-
-logger = logging.getLogger(__name__)
-logger.setLevel(os.environ.get('LOGLEVEL', logging.INFO))
-# must have a handler, otherwise logging will use lastresort
-c_handler = logging.StreamHandler()
-LOGFORMAT = '%(name)s - %(levelname)s - %(message)s'
-# c_handler.setFormatter(logging.Formatter('%(name)s - %(levelname)s - %(message)s'))
-c_handler.setFormatter(logging.Formatter(LOGFORMAT))
-logger.addHandler(c_handler)
-logger.debug('test event')
 
 
 def map_variance(samples, nu0, var0):

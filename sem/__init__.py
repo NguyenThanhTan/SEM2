@@ -38,8 +38,20 @@ def make_keras_picklable():
     cls = Model
     cls.__reduce__ = __reduce__
 
+import logging
+import os
+import coloredlogs
+logger = logging.getLogger(__name__)
+logger.setLevel(os.environ.get('LOGLEVEL', logging.INFO))
+# must have a handler, otherwise logging will use lastresort
+c_handler = logging.StreamHandler()
+LOGFORMAT = '%(name)s - %(levelname)s - %(message)s'
+# c_handler.setFormatter(logging.Formatter('%(name)s - %(levelname)s - %(message)s'))
+# c_handler.setFormatter(coloredlogs.ColoredFormatter(LOGFORMAT))
+c_handler.setFormatter(logging.Formatter(LOGFORMAT))
+logger.addHandler(c_handler)
 
-print(f'{__file__}: Make Model picklable')
+logger.info(f'{__file__}: Make Model picklable')
 # Run the function
 make_keras_picklable()
 
