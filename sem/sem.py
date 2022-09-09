@@ -165,6 +165,7 @@ class SEM(object):
         # calculate sCRP prior
         prior = self.c.copy()
         # added on june 22 to test the case when old is not benefited
+        # TODO: comment for sCRP
         prior[prior > 0] = 1
         idx = len(np.nonzero(self.c)[0])  # get number of visited clusters
 
@@ -181,7 +182,7 @@ class SEM(object):
         # prior /= np.sum(prior)
         return prior
 
-    def run(self, x, k=None, progress_bar=True, leave_progress_bar=True, minimize_memory=False, compile_model=True, train=True):
+    def run(self, x, k=None, progress_bar=False, leave_progress_bar=True, minimize_memory=False, compile_model=True, train=True):
         """
         Parameters
         ----------
@@ -258,10 +259,10 @@ class SEM(object):
         x_hat_w_array = np.zeros(np.shape(x))
         x_hat_w2_array = np.zeros(np.shape(x))
         x_hat_w3_array = np.zeros(np.shape(x))
-        after_relu_array = np.zeros(np.shape(x))
-        after_relu_w_array = np.zeros(np.shape(x))
-        after_relu_w2_array = np.zeros((np.shape(x)[0], (np.shape(x)[1] * 2)))
-        after_relu_w3_array = np.zeros((np.shape(x)[0], (np.shape(x)[1] * 3)))
+        after_relu_array = np.zeros((np.shape(x)[0], int(self.f_opts['n_hidden'])))
+        after_relu_w_array = np.zeros((np.shape(x)[0], int(self.f_opts['n_hidden'])))
+        after_relu_w2_array = np.zeros((np.shape(x)[0], int(self.f_opts['n_hidden'] * 2)))
+        after_relu_w3_array = np.zeros((np.shape(x)[0], int(self.f_opts['n_hidden'] * 3)))
         log_boundary_probability = np.zeros(np.shape(x)[0])
         # tan's code to encode types of boundaries for visualization
         boundaries = np.zeros((n,))
@@ -294,13 +295,13 @@ class SEM(object):
             # get predictions from world model to extract prediction error
             if ii > 0:
                 after_relu_w, x_hat_w = self.general_event_model.predict_next(self.x_prev)
-                after_relu_w2, x_hat_w2 = self.general_event_model_x2.predict_next(self.x_prev)
-                after_relu_w3, x_hat_w3 = self.general_event_model_x3.predict_next(self.x_prev)
-                after_relu_yoke, x_hat_yoke = self.general_event_model_yoke.predict_next(self.x_prev)
+                # after_relu_w2, x_hat_w2 = self.general_event_model_x2.predict_next(self.x_prev)
+                # after_relu_w3, x_hat_w3 = self.general_event_model_x3.predict_next(self.x_prev)
+                # after_relu_yoke, x_hat_yoke = self.general_event_model_yoke.predict_next(self.x_prev)
                 pe_w[ii] = np.linalg.norm(x_curr - x_hat_w)
-                pe_w2[ii] = np.linalg.norm(x_curr - x_hat_w2)
-                pe_w3[ii] = np.linalg.norm(x_curr - x_hat_w3)
-                pe_yoke[ii] = np.linalg.norm(x_curr - x_hat_yoke)
+                # pe_w2[ii] = np.linalg.norm(x_curr - x_hat_w2)
+                # pe_w3[ii] = np.linalg.norm(x_curr - x_hat_w3)
+                # pe_yoke[ii] = np.linalg.norm(x_curr - x_hat_yoke)
 
             # calculate sCRP prior
             prior = self._calculate_unnormed_sCRP(self.k_prev)
@@ -318,6 +319,7 @@ class SEM(object):
             array_res = []
             for count, k0 in enumerate(active):
                 if k0 not in self.event_models.keys():
+                    # print(k0, self.event_models)
                     # This line trigger dynamic importing
                     new_model = self.f_class_remote.remote(self.d, **self.f_opts)
                     new_model.init_model.remote()
@@ -326,6 +328,11 @@ class SEM(object):
                     # model = ray.get(new_model.init_model.remote())
                     # new_model.set_model.remote(model)
                     self.event_models[k0] = new_model
+                    # TODO: comment for generic model
+                    # set weights based on the general event model,
+                    # always use .model_weights instead of .model.get_weights() or .model.set_weights(...)
+                    # because .model_weights is guaranteed to be up-to-date.
+                    logger.info('Set generic weights to new event schemas')
                     self.event_models[k0].set_model_weights.remote(self.general_event_model.model_weights)
                 jobs.append(self.event_models[k0].get_likelihood.remote(k0, **kwargs))
                 # Chunking only constrain cpu usage, memory usage grows as self.f_class_remote.remote(self.d, **self.f_opts)
@@ -426,12 +433,12 @@ class SEM(object):
                     # model = self.event_models[self.k_prev]
                     x_hat[ii, :] = x_hat_active
                     pe[ii] = np.linalg.norm(x_curr - x_hat_active)
-                    x_hat_w2_array[ii, :] = x_hat_w2
-                    x_hat_w3_array[ii, :] = x_hat_w3
+                    # x_hat_w2_array[ii, :] = x_hat_w2
+                    # x_hat_w3_array[ii, :] = x_hat_w3
                     x_hat_w_array[ii, :] = x_hat_w
                     after_relu_array[ii, :] = after_relu
-                    after_relu_w2_array[ii, :] = after_relu_w2
-                    after_relu_w3_array[ii, :] = after_relu_w3
+                    # after_relu_w2_array[ii, :] = after_relu_w2
+                    # after_relu_w3_array[ii, :] = after_relu_w3
                     after_relu_w_array[ii, :] = after_relu_w
                     # surprise[ii] = log_like[ii, self.k_prev]
 
@@ -457,7 +464,9 @@ class SEM(object):
                     # create a new token to avoid mixing with a distant past
                     self.event_models[k].new_token.remote()
                     # re-add filler vector, need to update and recompute f0
+                    # TODO: uncomment to add f0
                     # self.event_models[k].update_f0.remote(x_curr)
+                    # TODO: comment to add f0
                     if self.x_prev is None:  # start of each run
                         # assume that the previous scene is the same scene
                         self.event_models[k].update.remote(x_curr, x_curr)
@@ -468,26 +477,26 @@ class SEM(object):
                 # for the world model, new token at the start of each new run
                 if self.x_prev is None:  # start of each run
                     self.general_event_model.new_token()
-                    self.general_event_model_x2.new_token()
-                    self.general_event_model_x3.new_token()
+                    # self.general_event_model_x2.new_token()
+                    # self.general_event_model_x3.new_token()
                     # self.general_event_model.update_f0(x_curr)
                     # assume that the previous scene is the same scene, so that not using update_f0
                     self.general_event_model.update(x_curr, x_curr)
-                    self.general_event_model_x2.update(x_curr, x_curr)
-                    self.general_event_model_x3.update(x_curr, x_curr)
+                    # self.general_event_model_x2.update(x_curr, x_curr)
+                    # self.general_event_model_x3.update(x_curr, x_curr)
                 else:
                     self.general_event_model.update(self.x_prev, x_curr)
-                    self.general_event_model_x2.update(self.x_prev, x_curr)
-                    self.general_event_model_x3.update(self.x_prev, x_curr)
-                # for yoke model, need to reset hidden units by creating a new token (no previous scenes).
-                if not event_boundary:
-                    self.general_event_model_yoke.update(self.x_prev, x_curr)
-                else:
-                    self.general_event_model_yoke.new_token()
-                    if self.x_prev is None:  # start of each run:
-                        self.general_event_model_yoke.update(x_curr, x_curr)
-                    else:
-                        self.general_event_model_yoke.update(self.x_prev, x_curr)
+                    # self.general_event_model_x2.update(self.x_prev, x_curr)
+                    # self.general_event_model_x3.update(self.x_prev, x_curr)
+                # # for yoke model, need to reset hidden units by creating a new token (no previous scenes).
+                # if not event_boundary:
+                #     self.general_event_model_yoke.update(self.x_prev, x_curr)
+                # else:
+                #     self.general_event_model_yoke.new_token()
+                #     if self.x_prev is None:  # start of each run:
+                #         self.general_event_model_yoke.update(x_curr, x_curr)
+                #     else:
+                #         self.general_event_model_yoke.update(self.x_prev, x_curr)
 
             self.x_prev = x_curr  # store the current scene for next trial
             self.k_prev = k  # store the current event for the next trial

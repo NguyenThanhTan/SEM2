@@ -239,7 +239,8 @@ class LinearEvent(object):
         self.f0_is_trained = True
 
         # precompute f0 for speed
-        self.f0 = self._predict_f0()
+        # self._predict_f0 return self._predict_next_generative, so change its usage here.
+        after_relu, self.f0 = self._predict_f0()
 
     def get_variance(self):
         # Sigma is stored as a vector corresponding to the entries of the diagonal covariance matrix
@@ -456,9 +457,14 @@ class LinearEvent(object):
             # lik_restart_event = self.log_likelihood_f0(x_curr)
             # added on july_26, manually tested and the logic is correct
             # hidden=False, past scenes don't influence here
+            # TODO: change for f0
+            # re-add filler vector, compute likelihood f0 instead
+            # lik_restart_event = self.log_likelihood_f0(x_curr)
             _, _, lik_restart_event = self.log_likelihood_next(x_prev, x_curr, hidden=False)
             return k0, (after_relu, x_hat_active, lik, lik_restart_event)
         else:
+            # TODO: change for f0
+            # re-add filler vector, compute likelihood f0 instead
             # lik = self.log_likelihood_f0(x_curr)
             # hidden=False, past scenes don't influence here
             if x_prev is None:  # start of each run
@@ -638,6 +644,7 @@ class RecurrentLinearEvent(LinearEvent):
         x_train = x_train.reshape((1, np.min([x_train.shape[0], self.t]), self.d))
         return x_train
 
+    # note that self._predict_next and self._predict_next_generative return after_relu and x_hat -> change their usages
     # predict a single example
     def _predict_next(self, X):
         self.model.set_weights(self.model_weights)
@@ -649,9 +656,10 @@ class RecurrentLinearEvent(LinearEvent):
         assert X.shape[0] == self.d
 
         # value of X is sent to ray process, thus read_only, copy to modify
-        # depriving input, either skeleton or semantics
+        # depriving input, either skeleton 3:17 or semantics 17:
         x_test = np.copy(X.reshape((1, self.d)))
         # x_test[0, 3:17] = 0
+        # x_test[0, 17:] = 0
 
         # concatenate current example with history of last t-1 examples
         # this is for the recurrent part of the network
@@ -685,11 +693,9 @@ class RecurrentLinearEvent(LinearEvent):
         assert Xp.shape[0] == self.d
 
         # value of X is sent to ray process, thus read_only, copy to modify
-        # depriving input, either skeleton or semantics
+        # depriving input, either skeleton 3:17 or semantics 17:
         x_example = np.copy(X.reshape((1, self.d)))
-        # deprive skel
         # x_example[0, 3:17] = 0
-        # deprive emb
         # x_example[0, 17:] = 0
         xp_example = Xp.reshape((1, self.d))
 
