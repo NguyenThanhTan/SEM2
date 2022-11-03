@@ -1,5 +1,5 @@
 import logging
-# no need to set handler here, since we already set handler in __init__, this child logger inherit that.
+# no need to set handler here, since we already set handler in root logger (utils.py), this child logger inherit that.
 logger = logging.getLogger(__name__)
 logger.info('Import sem.py')
 import numpy as np
@@ -59,7 +59,7 @@ class SEM(object):
 
         # SEM internal state
         #
-        self.k = 0  # maximum number of clusters (event types)
+        self.n_clusters = 0  # maximum number of clusters (event types)
         self.c = np.array([])  # used by the sCRP prior -> running count of the clustering process
         self.c_eval = np.zeros(shape=(10000,))
         self.d = None  # dimension of scenes
@@ -138,7 +138,7 @@ class SEM(object):
         self.x_prev = None  # Clear this for future use
         self.k_prev = None  #
 
-    def _update_state(self, x, k=None):
+    def _update_state(self, x, n_clusters=None):
         """
         Update internal state based on input data X and max # of event types (clusters) K
         """
@@ -150,14 +150,14 @@ class SEM(object):
             assert self.d == d  # scenes must be of same dimension
 
         # get max # of clusters / event types
-        if k is None:
-            k = n
-        self.k = max(self.k, k)
+        if n_clusters is None:
+            n_clusters = n
+        self.n_clusters = max(self.n_clusters, n_clusters)
 
         # initialize CRP prior = running count of the clustering process
-        if self.c.size < self.k:
-            self.c = np.concatenate((self.c, np.zeros(self.k - self.c.size)), axis=0)
-        assert self.c.size == self.k
+        if self.c.size < self.n_clusters:
+            self.c = np.concatenate((self.c, np.zeros(self.n_clusters - self.c.size)), axis=0)
+        assert self.c.size == self.n_clusters
 
     def _calculate_unnormed_sCRP(self, prev_cluster=None):
         # internal function for consistency across "run" methods
@@ -170,7 +170,7 @@ class SEM(object):
         idx = len(np.nonzero(self.c)[0])  # get number of visited clusters
 
         # tan's code to correct when k is not None
-        if idx < self.k:
+        if idx < self.n_clusters:
             prior[idx] += self.alfa  # set new cluster probability to alpha
         # if idx <= self.k:
         #     prior[idx] += self.alfa  # set new cluster probability to alpha
@@ -182,37 +182,7 @@ class SEM(object):
         # prior /= np.sum(prior)
         return prior
 
-    def run(self, x, k=None, progress_bar=False, leave_progress_bar=True, minimize_memory=False, compile_model=True, train=True):
-        """
-        Parameters
-        ----------
-        x: N x D array of
-
-        k: int
-            maximum number of clusters
-
-        progress_bar: bool
-            use a tqdm progress bar?
-
-        leave_progress_bar: bool
-            leave the progress bar after completing?
-
-        minimize_memory: bool
-            function to minimize memory storage during running
-
-        compile_model: bool (default = True)
-            compile the stored model.  Leave false if previously run.
-        train: bool (default=True)
-            whether to train this video.
-
-        Return
-        ------
-        post: n by k array of posterior probabilities
-
-        """
-
-        # update internal state
-        self._update_state(x, k)
+    def init_general_models(self):
         if self.general_event_model is None:
             logger.info(f'Creating World model for initializations!')
             new_model = self.f_class(self.d, **self.f_opts)
@@ -243,13 +213,43 @@ class SEM(object):
             self.general_event_model_yoke = new_model
             new_model = None  # clear the new model variable (but not the model itself) from memory
             self.f_opts['n_hidden'] = int(self.f_opts['n_hidden'] / 3)
-        del k  # use self.k and self.d
+
+    def run(self, x, n_clusters=None, progress_bar=False, leave_progress_bar=True, minimize_memory=False, compile_model=True, train=True):
+        """
+        Parameters
+        ----------
+        x: N x D array of
+
+        k: int
+            maximum number of clusters
+
+        progress_bar: bool
+            use a tqdm progress bar?
+
+        leave_progress_bar: bool
+            leave the progress bar after completing?
+
+        minimize_memory: bool
+            function to minimize memory storage during running
+
+        compile_model: bool (default = True)
+            compile the stored model.  Leave false if previously run.
+        train: bool (default=True)
+            whether to train this video.
+
+        Return
+        ------
+        post: n by k array of posterior probabilities
+
+        """
+
+        # update internal state
+        self._update_state(x, n_clusters)
+        self.init_general_models()
 
         n = x.shape[0]
 
         # initialize arrays
-        # if not minimize_memory:
-        post = np.zeros((n, self.k))
         pe = np.zeros(np.shape(x)[0])
         pe_w = np.zeros(np.shape(x)[0])
         pe_w2 = np.zeros(np.shape(x)[0])
@@ -263,23 +263,16 @@ class SEM(object):
         after_relu_w_array = np.zeros((np.shape(x)[0], int(self.f_opts['n_hidden'])))
         after_relu_w2_array = np.zeros((np.shape(x)[0], int(self.f_opts['n_hidden'] * 2)))
         after_relu_w3_array = np.zeros((np.shape(x)[0], int(self.f_opts['n_hidden'] * 3)))
-        log_boundary_probability = np.zeros(np.shape(x)[0])
-        # tan's code to encode types of boundaries for visualization
         boundaries = np.zeros((n,))
 
         # these are special case variables to deal with the possibility the current event is restarted
-        lik_restart_event = -np.inf
-        repeat_prob = -np.inf
-        restart_prob = 0
-        # tan's code to determine the predictive strength of the model
-        restart_indices = []
-        repeat_indices = []
-        # frame_dynamics = dict(restart_lik=[], repeat_lik=[], new_lik=[], old_lik=[], restart_prior=[], repeat_prior=[],
-        #                       new_prior=[], old_prior=[], post=[])
+        # lik_restart_event = -np.inf
+        # repeat_prob = -np.inf
+        # restart_prob = 0
 
-        #
-        log_like = np.zeros((n, self.k)) - np.inf
-        log_prior = np.zeros((n, self.k)) - np.inf
+        log_like = np.zeros((n, self.n_clusters)) - np.inf
+        log_prior = np.zeros((n, self.n_clusters)) - np.inf
+        log_post = np.zeros((n, self.n_clusters)) - np.inf
 
         # this code just controls the presence/absence of a progress bar -- it isn't important
         if progress_bar:
@@ -292,34 +285,19 @@ class SEM(object):
         for ii in my_it(n):
 
             x_curr = x[ii, :].copy()
-            # get predictions from world model to extract prediction error
-            if ii > 0:
-                after_relu_w, x_hat_w = self.general_event_model.predict_next(self.x_prev)
-                # after_relu_w2, x_hat_w2 = self.general_event_model_x2.predict_next(self.x_prev)
-                # after_relu_w3, x_hat_w3 = self.general_event_model_x3.predict_next(self.x_prev)
-                # after_relu_yoke, x_hat_yoke = self.general_event_model_yoke.predict_next(self.x_prev)
-                pe_w[ii] = np.linalg.norm(x_curr - x_hat_w)
-                # pe_w2[ii] = np.linalg.norm(x_curr - x_hat_w2)
-                # pe_w3[ii] = np.linalg.norm(x_curr - x_hat_w3)
-                # pe_yoke[ii] = np.linalg.norm(x_curr - x_hat_yoke)
 
-            # calculate sCRP prior
+            # prior
             prior = self._calculate_unnormed_sCRP(self.k_prev)
-            # N.B. k_prev should be none for the first event if there wasn't pre-training
-
             # likelihood
             active = np.nonzero(prior)[0]
             lik = np.zeros(len(active))
-
             # store the predicted vector
             x_hat_active = None
-
             kwargs = {'x_curr': x_curr, 'x_prev': self.x_prev, 'k_prev': self.k_prev}
             jobs = []
             array_res = []
             for count, k0 in enumerate(active):
                 if k0 not in self.event_models.keys():
-                    # print(k0, self.event_models)
                     # This line trigger dynamic importing
                     new_model = self.f_class_remote.remote(self.d, **self.f_opts)
                     new_model.init_model.remote()
@@ -328,13 +306,13 @@ class SEM(object):
                     # model = ray.get(new_model.init_model.remote())
                     # new_model.set_model.remote(model)
                     self.event_models[k0] = new_model
-                    # TODO: comment for generic model
+                    # TODO: comment for random init instead of weights from generic model
                     # set weights based on the general event model,
                     # always use .model_weights instead of .model.get_weights() or .model.set_weights(...)
                     # because .model_weights is guaranteed to be up-to-date.
                     logger.info('Set generic weights to new event schemas')
                     self.event_models[k0].set_model_weights.remote(self.general_event_model.model_weights)
-                jobs.append(self.event_models[k0].get_likelihood.remote(k0, **kwargs))
+                jobs.append(self.event_models[k0].get_log_likelihood.remote(k0, **kwargs))
                 # Chunking only constrain cpu usage, memory usage grows as self.f_class_remote.remote(self.d, **self.f_opts)
                 # 300MB per Actor.
                 # Actors will exit when the original handle to the actor is out of scope,
@@ -349,35 +327,33 @@ class SEM(object):
                 else:
                     lik[k0] = pack
 
-            # determine the event identity (without worrying about event breaks for now)
-            _post = np.log(prior[:len(active)]) / self.d + lik
+            # posterior
+            posterior = np.log(prior[:len(active)]) / self.d + lik
             if ii > 0:
-                # the probability that the current event is repeated is the OR probability -- but b/c
-                # we are using a MAP approximation over all possibilities, it is a max of the repeated/restarted
-
                 # is restart higher under the current event
                 restart_prob = lik_restart_event + np.log(prior[self.k_prev] - self.lmda) / self.d
-                repeat_prob = _post[self.k_prev]
+                repeat_prob = posterior[self.k_prev]
                 if restart_prob > repeat_prob:
                     logger.debug(f'\nlog_RESTART>log_repeat event_type {self.k_prev}')
                 else:
                     logger.debug(f'\nlog_REPEAT>log_restart event_type {self.k_prev}')
-                _post[self.k_prev] = np.max([repeat_prob, restart_prob])
+                posterior[self.k_prev] = np.max([repeat_prob, restart_prob])
 
             logger.debug(f'\nlog_prior {np.log(prior[:len(active)]) / self.d}'
                          f'\nlog_lik {lik:}'
-                         f'\nlog_post {_post:}')
+                         f'\nlog_posterior {posterior:}')
 
-            # get the MAP cluster and only update it
-            # during evaluation, not consider creating a new event.
+            # get the MAP cluster
             if not train:
-                k = np.argmax(_post[:-1])  # MAP cluster
+                # during evaluation, not consider creating a new event.
+                k = np.argmax(posterior[:-1])  # MAP cluster
             else:
-                k = np.argmax(_post)  # MAP cluster
+                k = np.argmax(posterior)  # MAP cluster
             logger.debug(f'\nEvent type {k}')
             if k != self.k_prev:
                 logger.debug(f'Boundary Switching')
-            # determine whether there was a boundary
+
+            # determine whether there was a boundary, and which type
             event_boundary = (k != self.k_prev) or ((k == self.k_prev) and (restart_prob > repeat_prob))
             # Add 2 and 3 to code for new_event and restarting
             if k == len(active) - 1:
@@ -386,81 +362,20 @@ class SEM(object):
                 boundaries[ii] = 3
             else:
                 boundaries[ii] = event_boundary  # could be 0 or 1
-            # calculate the event boundary probability
-            # _post is changed to calculate surprise
-            _post[self.k_prev] = restart_prob
-            # if not minimize_memory:
-            log_boundary_probability[ii] = logsumexp(_post) - logsumexp(np.concatenate([_post, [repeat_prob]]))
-            # calculate the probability of an event label, ignoring the event boundaries
-            if self.k_prev is not None:
-                # tan's version to keep it consistent w.r.t restart_prob and repeat_prob
-                if restart_prob > repeat_prob:
-                    prior[self.k_prev] -= self.lmda
-                    lik[self.k_prev] = lik_restart_event
-                _post[self.k_prev] = np.log(prior[self.k_prev]) / self.d + lik[self.k_prev]
-                # _post[self.k_prev] = logsumexp([restart_prob, repeat_prob])
-                # prior[self.k_prev] -= self.lmda / 2.
-                # lik[self.k_prev] = logsumexp(np.array([lik[self.k_prev], lik_restart_event]))
 
-                # now, the normalized posterior
-                # if not minimize_memory:
-                # Now, post should be equal to _post used to derive boundaries, no need for duplication
-                # p = np.log(prior[:len(active)]) / self.d + lik
-                # post[ii, :len(active)] = np.exp(p - logsumexp(p))
-                # This is on a 0-1 scale
-                post[ii, :len(active)] = np.exp(_post - logsumexp(_post))
-
-                # this is a diagnostic readout and does not effect the model
-                # these metrics don't distinguish between restart and repeat for k_prev,
-                # but they are faster than frame_dynamics
-                log_like[ii, :len(active)] = lik
-                log_prior[ii, :len(active)] = np.log(prior[:len(active)]) / self.d
-
-                # These aren't used again, remove from memory
-                _post = None
-                lik = None
-                prior = None
-
-            else:
-                log_like[ii, 0] = 0.0
-                log_prior[ii, 0] = self.alfa
-                # if not minimize_memory:
-                post[ii, 0] = 1.0
-
-            if not minimize_memory:
-                # prediction error: euclidean distance of the last model and the current scene vector
-                if ii > 0:
-                    # model = self.event_models[self.k_prev]
-                    x_hat[ii, :] = x_hat_active
-                    pe[ii] = np.linalg.norm(x_curr - x_hat_active)
-                    # x_hat_w2_array[ii, :] = x_hat_w2
-                    # x_hat_w3_array[ii, :] = x_hat_w3
-                    x_hat_w_array[ii, :] = x_hat_w
-                    after_relu_array[ii, :] = after_relu
-                    # after_relu_w2_array[ii, :] = after_relu_w2
-                    # after_relu_w3_array[ii, :] = after_relu_w3
-                    after_relu_w_array[ii, :] = after_relu_w
-                    # surprise[ii] = log_like[ii, self.k_prev]
-
-            self.c[k] += self.kappa  # update counts
-            if not train:
-                self.c_eval[k] += 1
-            # tan's code to not training while inferring
+            # update schema activations
             if train:
-                # update event model
+                self.c[k] += self.kappa  # update counts
+            else:
+                self.c_eval[k] += 1
+
+            # train event schema
+            if train:
                 if not event_boundary:
                     # we're in the same event -> update using previous scene
                     assert self.x_prev is not None
                     self.event_models[k].update.remote(self.x_prev, x_curr)
                 else:
-                    # set weights based on the general event model,
-                    # always use .model_weights instead of .model.get_weights() or .model.set_weights(...)
-                    # because .model_weights is guaranteed to be up-to-date.
-                    # event models are always general event models if
-                    # the set_model_weights is here instead of when the new event model was created
-                    # if this line is commented, new event models are initialized to random weights.
-                    # self.event_models[k].set_model_weights.remote(self.general_event_model.model_weights)
-
                     # create a new token to avoid mixing with a distant past
                     self.event_models[k].new_token.remote()
                     # re-add filler vector, need to update and recompute f0
@@ -472,7 +387,8 @@ class SEM(object):
                         self.event_models[k].update.remote(x_curr, x_curr)
                     else:
                         self.event_models[k].update.remote(self.x_prev, x_curr)
-            # parallel training a general event model
+
+            # parallel training a general event schema
             if train:
                 # for the world model, new token at the start of each new run
                 if self.x_prev is None:  # start of each run
@@ -501,30 +417,47 @@ class SEM(object):
             self.x_prev = x_curr  # store the current scene for next trial
             self.k_prev = k  # store the current event for the next trial
 
-        # calculate Bayesian Surprise
-        # tan's intepretation (might be wrong):
-        # from t to t+1, the larger difference between posterior distribution at t and likelihood distribution at t+1, the larger surprise
-        log_post = log_like[:-1, :] + log_prior[:-1, :]
-        log_post -= np.tile(logsumexp(log_post, axis=1), (np.shape(log_post)[1], 1)).T
-        surprise = np.concatenate([[0], logsumexp(log_post + log_like[1:, :], axis=1)])
+            # these are a diagnostic readout and do not affect the model
+            if ii > 0:
+                log_like[ii, :len(active)] = lik
+                log_prior[ii, :len(active)] = np.log(prior[:len(active)]) / self.d
+                log_post[ii, :len(active)] = posterior
+
+                x_hat[ii, :] = x_hat_active
+                pe[ii] = np.linalg.norm(x_curr - x_hat_active)
+                after_relu_array[ii, :] = after_relu
+                # get predictions from world model to extract prediction error
+                after_relu_w, x_hat_w = self.general_event_model.predict_next(self.x_prev)
+                # after_relu_w2, x_hat_w2 = self.general_event_model_x2.predict_next(self.x_prev)
+                # after_relu_w3, x_hat_w3 = self.general_event_model_x3.predict_next(self.x_prev)
+                pe_w[ii] = np.linalg.norm(x_curr - x_hat_w)
+                # pe_w2[ii] = np.linalg.norm(x_curr - x_hat_w2)
+                # pe_w3[ii] = np.linalg.norm(x_curr - x_hat_w3)
+                x_hat_w_array[ii, :] = x_hat_w
+                # x_hat_w2_array[ii, :] = x_hat_w2
+                # x_hat_w3_array[ii, :] = x_hat_w3
+                after_relu_w_array[ii, :] = after_relu_w
+                # after_relu_w2_array[ii, :] = after_relu_w2
+                # after_relu_w3_array[ii, :] = after_relu_w3
+            else:
+                log_like[ii, 0] = 0.0
+                log_prior[ii, 0] = self.alfa
+                log_post[ii, 0] = 1.0
 
         # Remove null columns to optimize memory storage, only for some arrays.
         self.results = Results()
-        post = post[:, np.any(post != 0, axis=0)]
-        self.results.post = post
         self.results.pe = pe
         self.results.pe_w = pe_w
         self.results.pe_w2 = pe_w2
         self.results.pe_w3 = pe_w3
         self.results.pe_yoke = pe_yoke
-        self.results.surprise = surprise
         log_like = log_like[:, np.any(log_like != -np.inf, axis=0)]
         self.results.log_like = log_like
         log_prior = log_prior[:, np.any(log_prior != -np.inf, axis=0)]
         self.results.log_prior = log_prior
-        # Should derive e_hat from post, avoid two-sources problem.
-        # self.results.e_hat = np.argmax(log_like + log_prior, axis=1)
-        self.results.e_hat = np.argmax(post, axis=1)
+        log_post = log_post[:, np.any(log_post != 0, axis=0)]
+        self.results.log_post = np.log(log_post)
+        self.results.e_hat = np.argmax(log_post, axis=1)
         self.results.x = x
         self.results.x_hat = x_hat
         self.results.x_hat_w = x_hat_w_array
@@ -534,19 +467,14 @@ class SEM(object):
         self.results.after_relu_w = after_relu_w_array
         self.results.after_relu_w2 = after_relu_w2_array
         self.results.after_relu_w3 = after_relu_w3_array
-        # self.results.log_loss = logsumexp(log_like + log_prior, axis=1)
-        self.results.log_boundary_probability = log_boundary_probability
 
         # switching between video, not a real boundary
         boundaries[0] = 0
         self.results.boundaries = boundaries
         self.results.c = self.c.copy()
         self.results.c_eval = self.c_eval.copy()
-        # self.results.Sigma = {i: self.event_models[i].Sigma for i in self.event_models.keys()}
-        if minimize_memory:
-            self.clear_event_models()
-            return
-        return post
+        self.results.Sigma = {i: ray.get(self.event_models[i].get_sigma.remote()) for i in self.event_models.keys()}
+        self.results.weights = {i: ray.get(self.event_models[i].get_model_weights.remote()) for i in self.event_models.keys()}
 
     def update_single_event(self, x, update=True, save_x_hat=False):
         """
@@ -562,19 +490,19 @@ class SEM(object):
         n_scene = np.shape(x)[0]
 
         if update:
-            self.k += 1
-            self._update_state(x, self.k)
+            self.n_clusters += 1
+            self._update_state(x, self.n_clusters)
 
             # pull the relevant items from the results
             if self.results is None:
                 self.results = Results()
-                post = np.zeros((1, self.k))
-                log_like = np.zeros((1, self.k)) - np.inf
-                log_prior = np.zeros((1, self.k)) - np.inf
+                post = np.zeros((1, self.n_clusters))
+                log_like = np.zeros((1, self.n_clusters)) - np.inf
+                log_prior = np.zeros((1, self.n_clusters)) - np.inf
                 if save_x_hat:
                     x_hat = np.zeros((n_scene, self.d))
                     sigma = np.zeros((n_scene, self.d))
-                    scene_log_like = np.zeros((n_scene, self.k)) - np.inf  # for debugging
+                    scene_log_like = np.zeros((n_scene, self.n_clusters)) - np.inf  # for debugging
 
             else:
                 post = self.results.post
@@ -588,7 +516,7 @@ class SEM(object):
                 # extend the size of the posterior, etc
 
                 n, k0 = np.shape(post)
-                while k0 < self.k:
+                while k0 < self.n_clusters:
                     post = np.concatenate([post, np.zeros((n, 1))], axis=1)
                     log_like = np.concatenate([log_like, np.zeros((n, 1)) - np.inf], axis=1)
                     log_prior = np.concatenate([log_prior, np.zeros((n, 1)) - np.inf], axis=1)
@@ -600,17 +528,17 @@ class SEM(object):
                         ], axis=1)
 
                 # extend the size of the posterior, etc
-                post = np.concatenate([post, np.zeros((1, self.k))], axis=0)
-                log_like = np.concatenate([log_like, np.zeros((1, self.k)) - np.inf], axis=0)
-                log_prior = np.concatenate([log_prior, np.zeros((1, self.k)) - np.inf], axis=0)
+                post = np.concatenate([post, np.zeros((1, self.n_clusters))], axis=0)
+                log_like = np.concatenate([log_like, np.zeros((1, self.n_clusters)) - np.inf], axis=0)
+                log_prior = np.concatenate([log_prior, np.zeros((1, self.n_clusters)) - np.inf], axis=0)
                 if save_x_hat:
                     x_hat = np.concatenate([x_hat, np.zeros((n_scene, self.d))], axis=0)
                     sigma = np.concatenate([sigma, np.zeros((n_scene, self.d))], axis=0)
-                    scene_log_like = np.concatenate([scene_log_like, np.zeros((n_scene, self.k)) - np.inf], axis=0)
+                    scene_log_like = np.concatenate([scene_log_like, np.zeros((n_scene, self.n_clusters)) - np.inf], axis=0)
 
         else:
-            log_like = np.zeros((1, self.k)) - np.inf
-            log_prior = np.zeros((1, self.k)) - np.inf
+            log_like = np.zeros((1, self.n_clusters)) - np.inf
+            log_prior = np.zeros((1, self.n_clusters)) - np.inf
 
         # calculate un-normed sCRP prior
         prior = self._calculate_unnormed_sCRP(self.k_prev)
