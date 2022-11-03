@@ -1,10 +1,13 @@
 # If using multiprocessing, this module will be imported dynamically
+
 import logging
-# no need to set handler here, since we already set handler in __init__, this child logger inherit that.
+
+# no need to set handler here, since we already set handler in root logger (utils.py), this child logger inherit that.
 logger = logging.getLogger(__name__)
 logger.info('Import  event_models.py')
 import numpy as np
 import tensorflow as tf
+
 logger.info(f"{__file__}: TensorFlow Version: {tf.__version__}")
 tf.keras.backend.set_floatx('float64')
 # these settings seem to limit # threads for each process (ray actor)
@@ -446,7 +449,7 @@ class LinearEvent(object):
         if np.shape(self.prediction_errors)[0] > 1:
             self.Sigma = map_variance(self.prediction_errors, self.var_df0, self.var_scale0)
 
-    def get_likelihood(self, k0, k_prev, x_prev, x_curr):
+    def get_log_likelihood(self, k0, k_prev, x_prev, x_curr):
         current_event = (k0 == k_prev)
         if current_event:
             assert x_prev is not None
@@ -485,91 +488,8 @@ class LinearEvent(object):
     def set_model_weights(self, weights):
         self.model_weights = weights
 
-class NonLinearEvent(LinearEvent):
-
-    def __init__(self, d, var_df0=None, var_scale0=None, n_hidden=None, hidden_act='tanh', batch_size=32,
-                 optimizer=None, n_epochs=10, init_model=False, kernel_initializer='glorot_uniform',
-                 l2_regularization=0.00, dropout=0.50, prior_log_prob=None, reset_weights=False,
-                 batch_update=True, optimizer_kwargs=None, variance_prior_mode=None, variance_window=None):
-        LinearEvent.__init__(self, d, var_df0=var_df0, var_scale0=var_scale0, optimizer=optimizer, n_epochs=n_epochs,
-                             init_model=False, kernel_initializer=kernel_initializer, batch_size=batch_size,
-                             l2_regularization=l2_regularization, prior_log_prob=prior_log_prob,
-                             reset_weights=reset_weights, batch_update=batch_update,
-                             optimizer_kwargs=optimizer_kwargs, variance_prior_mode=variance_prior_mode,
-                             variance_window=variance_window)
-
-        if n_hidden is None:
-            n_hidden = d
-        self.n_hidden = n_hidden
-        self.hidden_act = hidden_act
-        self.dropout = dropout
-
-        if init_model:
-            self.init_model()
-
-    def _compile_model(self):
-        self.model = Sequential()
-        self.model.add(Dense(self.n_hidden, input_shape=(self.d,), activation=self.hidden_act,
-                             kernel_regularizer=self.kernel_regularizer,
-                             kernel_initializer=self.kernel_initializer))
-        self.model.add(Dropout(rate=self.dropout))
-        self.model.add(Dense(self.d, activation='linear',
-                             kernel_regularizer=self.kernel_regularizer,
-                             kernel_initializer=self.kernel_initializer))
-        self.model.compile(**self.compile_opts)
-
-
-class NonLinearEvent_normed(NonLinearEvent):
-
-    def __init__(self, d, var_df0=None, var_scale0=None, n_hidden=None, hidden_act='tanh',
-                 optimizer=None, n_epochs=10, init_model=False, kernel_initializer='glorot_uniform',
-                 l2_regularization=0.00, dropout=0.50, prior_log_prob=None, reset_weights=False, batch_size=32,
-                 batch_update=True, optimizer_kwargs=None, variance_prior_mode=None, variance_window=None):
-
-        NonLinearEvent.__init__(self, d, var_df0=var_df0, var_scale0=var_scale0, optimizer=optimizer, n_epochs=n_epochs,
-                                l2_regularization=l2_regularization, batch_size=batch_size,
-                                kernel_initializer=kernel_initializer, init_model=False,
-                                prior_log_prob=prior_log_prob, reset_weights=reset_weights,
-                                batch_update=batch_update, optimizer_kwargs=optimizer_kwargs,
-                                variance_prior_mode=variance_prior_mode, variance_window=variance_window)
-
-        if n_hidden is None:
-            n_hidden = d
-        self.n_hidden = n_hidden
-        self.hidden_act = hidden_act
-        self.dropout = dropout
-
-        if init_model:
-            self.init_model()
-
-    def _compile_model(self):
-        self.model = Sequential()
-        self.model.add(Dense(self.n_hidden, input_shape=(self.d,), activation=self.hidden_act,
-                             kernel_regularizer=self.kernel_regularizer,
-                             kernel_initializer=self.kernel_initializer))
-        self.model.add(Dropout(rate=self.dropout))
-        self.model.add(Dense(self.d, activation='linear',
-                             kernel_regularizer=self.kernel_regularizer,
-                             kernel_initializer=self.kernel_initializer))
-        self.model.add(Lambda(lambda x: l2_normalize(x, axis=-1)))
-        self.model.compile(**self.compile_opts)
-
-
-class StationaryEvent(LinearEvent):
-
-    def _predict_next(self, X):
-        """
-        Parameters
-        ----------
-        X: 1xD array-like data of inputs
-
-        Returns
-        -------
-        y: 1xD array of prediction vectors
-
-        """
-
-        return self.model.predict(np.zeros((1, self.d)))
+    def get_sigma(self):
+        return self.Sigma
 
 
 class RecurrentLinearEvent(LinearEvent):
@@ -646,7 +566,7 @@ class RecurrentLinearEvent(LinearEvent):
 
     # note that self._predict_next and self._predict_next_generative return after_relu and x_hat -> change their usages
     # predict a single example
-    def _predict_next(self, X):
+    def _predict_next(self, X, dropout=False, recurrent_dropout=False):
         self.model.set_weights(self.model_weights)
         # Note: this function predicts the next conditioned on the training data the model has seen
 
@@ -663,19 +583,41 @@ class RecurrentLinearEvent(LinearEvent):
 
         # concatenate current example with history of last t-1 examples
         # this is for the recurrent part of the network
-        # logger.debug(f'_predict_next: x_history_len={len(self.x_history)}')
+        logger.debug(f'_predict_next: x_history_len={len(self.x_history)}')
         x_test = self._unroll(x_test)
         # assert x_test[0, :, 3:17].sum() == 0
-        # logger.debug(f'_predict_next: x_test {x_test.shape}')
+        logger.debug(f'_predict_next: x_test {x_test.shape}')
         intermediate_input = x_test
+        relu_output = None
+        intermediate_output = None
         for l in self.model.layers:
-            intermediate_output = l(intermediate_input)
-            logger.debug(f'{intermediate_input.shape} -> {l.name} -> {intermediate_output.shape}')
-            logger.debug(intermediate_output)
-            intermediate_input = intermediate_output
+            if 'dropout' in l.name:
+                intermediate_output = l(intermediate_input, training=dropout)
+            elif 'gru' in l.name:
+                # logger.info(f"recurrent_dropout={l.recurrent_dropout}")
+                intermediate_output = l(intermediate_input, training=recurrent_dropout)
+            else:
+                intermediate_output = l(intermediate_input)
+
             if 're_lu' in l.name:
-                break
-        return intermediate_output, self.model.predict(x_test)
+                relu_output = intermediate_output
+            logger.debug(f'{intermediate_input.shape} -> {l.name} -> {intermediate_output.shape}')
+            intermediate_input = intermediate_output
+        # return relu_output, intermediate_output, self.model.predict(x_test)
+        return relu_output, np.array(intermediate_output).reshape(1, -1)
+
+    def predict_next(self, X, dropout=False, recurrent_dropout=False):
+        """
+        wrapper for the prediction function that changes the prediction to the identity function
+        for untrained models (this is an initialization technique)
+
+        """
+        if not self.f_is_trained:
+            if np.ndim(X) > 1:
+                return np.copy(X[-1, :]).reshape(1, -1)
+            return np.copy(X).reshape(1, -1)
+
+        return self._predict_next(X, dropout=dropout, recurrent_dropout=recurrent_dropout)
 
     def _predict_f0(self):
         return self.predict_next_generative(self.filler_vector)
@@ -685,6 +627,17 @@ class RecurrentLinearEvent(LinearEvent):
             self.Sigma = map_variance(self.prediction_errors, self.var_df0, self.var_scale0)
 
     def update(self, X, Xp, update_estimate=True):
+        """
+        This method: adds the input X to the active token (history[-1]), then add the training sample (x, xp) to the list of
+        all training pairs, then estimates (model weights and noise variance)
+        Args:
+            X:
+            Xp:
+            update_estimate:
+
+        Returns:
+
+        """
         if X.ndim > 1:
             X = X[-1, :]  # only consider last example
         assert X.ndim == 1
@@ -787,6 +740,142 @@ class RecurrentLinearEvent(LinearEvent):
     def decrease_lr(self):
         self.compile_opts['optimizer'].learning_rate = self.compile_opts['optimizer'].learning_rate / 10
 
+
+class GRUEvent(RecurrentLinearEvent):
+
+    def __init__(self, d, var_df0=None, var_scale0=None, t=3, n_hidden=None, optimizer=None,
+                 n_epochs=10, dropout=0.50, l2_regularization=0.00, batch_size=32,
+                 kernel_initializer='glorot_uniform', init_model=False, prior_log_prob=None, reset_weights=False,
+                 batch_update=True, optimizer_kwargs=None, variance_prior_mode=None, variance_window=None,
+                 recurrent_dropout=0.0):
+
+        RecurrentLinearEvent.__init__(self, d, var_df0=var_df0, var_scale0=var_scale0, t=t,
+                                      optimizer=optimizer, n_epochs=n_epochs,
+                                      l2_regularization=l2_regularization, batch_size=batch_size,
+                                      kernel_initializer=kernel_initializer, init_model=False,
+                                      prior_log_prob=prior_log_prob, reset_weights=reset_weights,
+                                      batch_update=batch_update, optimizer_kwargs=optimizer_kwargs,
+                                      variance_prior_mode=variance_prior_mode, variance_window=variance_window)
+
+        if n_hidden is None:
+            self.n_hidden = d
+        else:
+            self.n_hidden = n_hidden
+        self.dropout = dropout
+        self.recurrent_dropout = recurrent_dropout
+
+        if init_model:
+            self.init_model()
+
+    def _compile_model(self):
+        self.model = Sequential()
+        # input_shape[0] = timesteps; we pass the last self.t examples for train the hidden layer
+        # input_shape[1] = input_dim; each example is a self.d-dimensional vector
+        self.model.add(GRU(self.n_hidden, input_shape=(None, self.d),
+                           kernel_regularizer=self.kernel_regularizer,
+                           kernel_initializer=self.kernel_initializer,
+                           recurrent_dropout=self.recurrent_dropout))
+        self.model.add(LeakyReLU(alpha=0.3))
+        # The Dropout layer randomly sets input units to 0 with a frequency of rate
+        # at each step during training time, which helps prevent overfitting.
+        # Inputs not set to 0 are scaled up by 1/(1 - rate) such that the sum over all inputs is unchanged.
+        # Note that the Dropout layer only applies when training is set to True such that no values
+        # are dropped during inference. When using model.fit, training will be appropriately set to True
+        # automatically, and in other contexts, you can set the kwarg explicitly to True when calling the layer.
+        # self.model.predict(x) is in inference mode.
+        self.model.add(Dropout(rate=self.dropout))
+        self.model.add(Dense(self.d, activation=None, kernel_regularizer=self.kernel_regularizer,
+                             kernel_initializer=self.kernel_initializer))
+        self.model.compile(**self.compile_opts)
+
+
+class NonLinearEvent(LinearEvent):
+
+    def __init__(self, d, var_df0=None, var_scale0=None, n_hidden=None, hidden_act='tanh', batch_size=32,
+                 optimizer=None, n_epochs=10, init_model=False, kernel_initializer='glorot_uniform',
+                 l2_regularization=0.00, dropout=0.50, prior_log_prob=None, reset_weights=False,
+                 batch_update=True, optimizer_kwargs=None, variance_prior_mode=None, variance_window=None):
+        LinearEvent.__init__(self, d, var_df0=var_df0, var_scale0=var_scale0, optimizer=optimizer, n_epochs=n_epochs,
+                             init_model=False, kernel_initializer=kernel_initializer, batch_size=batch_size,
+                             l2_regularization=l2_regularization, prior_log_prob=prior_log_prob,
+                             reset_weights=reset_weights, batch_update=batch_update,
+                             optimizer_kwargs=optimizer_kwargs, variance_prior_mode=variance_prior_mode,
+                             variance_window=variance_window)
+
+        if n_hidden is None:
+            n_hidden = d
+        self.n_hidden = n_hidden
+        self.hidden_act = hidden_act
+        self.dropout = dropout
+
+        if init_model:
+            self.init_model()
+
+    def _compile_model(self):
+        self.model = Sequential()
+        self.model.add(Dense(self.n_hidden, input_shape=(self.d,), activation=self.hidden_act,
+                             kernel_regularizer=self.kernel_regularizer,
+                             kernel_initializer=self.kernel_initializer))
+        self.model.add(Dropout(rate=self.dropout))
+        self.model.add(Dense(self.d, activation='linear',
+                             kernel_regularizer=self.kernel_regularizer,
+                             kernel_initializer=self.kernel_initializer))
+        self.model.compile(**self.compile_opts)
+
+
+class NonLinearEvent_normed(NonLinearEvent):
+
+    def __init__(self, d, var_df0=None, var_scale0=None, n_hidden=None, hidden_act='tanh',
+                 optimizer=None, n_epochs=10, init_model=False, kernel_initializer='glorot_uniform',
+                 l2_regularization=0.00, dropout=0.50, prior_log_prob=None, reset_weights=False, batch_size=32,
+                 batch_update=True, optimizer_kwargs=None, variance_prior_mode=None, variance_window=None):
+
+        NonLinearEvent.__init__(self, d, var_df0=var_df0, var_scale0=var_scale0, optimizer=optimizer, n_epochs=n_epochs,
+                                l2_regularization=l2_regularization, batch_size=batch_size,
+                                kernel_initializer=kernel_initializer, init_model=False,
+                                prior_log_prob=prior_log_prob, reset_weights=reset_weights,
+                                batch_update=batch_update, optimizer_kwargs=optimizer_kwargs,
+                                variance_prior_mode=variance_prior_mode, variance_window=variance_window)
+
+        if n_hidden is None:
+            n_hidden = d
+        self.n_hidden = n_hidden
+        self.hidden_act = hidden_act
+        self.dropout = dropout
+
+        if init_model:
+            self.init_model()
+
+    def _compile_model(self):
+        self.model = Sequential()
+        self.model.add(Dense(self.n_hidden, input_shape=(self.d,), activation=self.hidden_act,
+                             kernel_regularizer=self.kernel_regularizer,
+                             kernel_initializer=self.kernel_initializer))
+        self.model.add(Dropout(rate=self.dropout))
+        self.model.add(Dense(self.d, activation='linear',
+                             kernel_regularizer=self.kernel_regularizer,
+                             kernel_initializer=self.kernel_initializer))
+        self.model.add(Lambda(lambda x: l2_normalize(x, axis=-1)))
+        self.model.compile(**self.compile_opts)
+
+
+class StationaryEvent(LinearEvent):
+
+    def _predict_next(self, X):
+        """
+        Parameters
+        ----------
+        X: 1xD array-like data of inputs
+
+        Returns
+        -------
+        y: 1xD array of prediction vectors
+
+        """
+
+        return self.model.predict(np.zeros((1, self.d)))
+
+
 class RecurrentEvent(RecurrentLinearEvent):
 
     def __init__(self, d, var_df0=None, var_scale0=None, t=3, n_hidden=None, optimizer=None,
@@ -818,44 +907,6 @@ class RecurrentEvent(RecurrentLinearEvent):
         self.model.add(SimpleRNN(self.n_hidden, input_shape=(None, self.d),
                                  kernel_regularizer=self.kernel_regularizer,
                                  kernel_initializer=self.kernel_initializer))
-        self.model.add(LeakyReLU(alpha=0.3))
-        self.model.add(Dropout(rate=self.dropout))
-        self.model.add(Dense(self.d, activation=None, kernel_regularizer=self.kernel_regularizer,
-                             kernel_initializer=self.kernel_initializer))
-        self.model.compile(**self.compile_opts)
-
-
-class GRUEvent(RecurrentLinearEvent):
-
-    def __init__(self, d, var_df0=None, var_scale0=None, t=3, n_hidden=None, optimizer=None,
-                 n_epochs=10, dropout=0.50, l2_regularization=0.00, batch_size=32,
-                 kernel_initializer='glorot_uniform', init_model=False, prior_log_prob=None, reset_weights=False,
-                 batch_update=True, optimizer_kwargs=None, variance_prior_mode=None, variance_window=None):
-
-        RecurrentLinearEvent.__init__(self, d, var_df0=var_df0, var_scale0=var_scale0, t=t,
-                                      optimizer=optimizer, n_epochs=n_epochs,
-                                      l2_regularization=l2_regularization, batch_size=batch_size,
-                                      kernel_initializer=kernel_initializer, init_model=False,
-                                      prior_log_prob=prior_log_prob, reset_weights=reset_weights,
-                                      batch_update=batch_update, optimizer_kwargs=optimizer_kwargs,
-                                      variance_prior_mode=variance_prior_mode, variance_window=variance_window)
-
-        if n_hidden is None:
-            self.n_hidden = d
-        else:
-            self.n_hidden = n_hidden
-        self.dropout = dropout
-
-        if init_model:
-            self.init_model()
-
-    def _compile_model(self):
-        self.model = Sequential()
-        # input_shape[0] = timesteps; we pass the last self.t examples for train the hidden layer
-        # input_shape[1] = input_dim; each example is a self.d-dimensional vector
-        self.model.add(GRU(self.n_hidden, input_shape=(None, self.d),
-                           kernel_regularizer=self.kernel_regularizer,
-                           kernel_initializer=self.kernel_initializer))
         self.model.add(LeakyReLU(alpha=0.3))
         self.model.add(Dropout(rate=self.dropout))
         self.model.add(Dense(self.d, activation=None, kernel_regularizer=self.kernel_regularizer,
