@@ -1,4 +1,5 @@
 import logging
+
 # no need to set handler here, since we already set handler in root logger (utils.py), this child logger inherit that.
 logger = logging.getLogger(__name__)
 logger.info('Import sem.py')
@@ -68,6 +69,8 @@ class SEM(object):
 
         self.x_prev = None  # last scene
         self.k_prev = None  # last event type
+        self.x_curr = None  # current observed scene
+        self.k_curr = None  # current highest posterior event type
 
         self.x_history = np.zeros(())
 
@@ -165,7 +168,7 @@ class SEM(object):
         # calculate sCRP prior
         prior = self.c.copy()
         # added on june 22 to test the case when old is not benefited
-        # TODO: comment for sCRP
+        # Model Modification: comment for sCRP
         prior[prior > 0] = 1
         idx = len(np.nonzero(self.c)[0])  # get number of visited clusters
 
@@ -214,13 +217,114 @@ class SEM(object):
             new_model = None  # clear the new model variable (but not the model itself) from memory
             self.f_opts['n_hidden'] = int(self.f_opts['n_hidden'] / 3)
 
-    def run(self, x, n_clusters=None, progress_bar=False, leave_progress_bar=True, minimize_memory=False, compile_model=True, train=True):
+    def update_current_event_model(self, event_boundary):
+        """
+        Update weights, variance, and history (update method) of the current event model
+        Args:
+            event_boundary: whether the current scene is the first scene of a new event
+
+        Returns:
+
+        """
+        if event_boundary:
+            # create a new token to avoid mixing with a distant past
+            self.event_models[self.k_curr].new_token.remote()
+            # re-add filler vector, need to update and recompute f0
+            # Model Modification: uncomment to add f0
+            # self.event_models[k].update_f0.remote(x_curr)
+            # Model Modification: comment to add f0
+            if self.x_prev is None:  # start of each run
+                # assume that the previous scene is the same scene
+                self.event_models[self.k_curr].update.remote(self.x_curr, self.x_curr)
+            else:
+                self.event_models[self.k_curr].update.remote(self.x_prev, self.x_curr)
+        else:
+            # we're in the same event -> update using previous scene
+            assert self.x_prev is not None
+            self.event_models[self.k_curr].update.remote(self.x_prev, self.x_curr)
+
+    def update_generic_event_model(self):
+        """
+        Update weights, variance, and history (update method) of the generic event model
+        Returns:
+
+        """
+        # for the world model, new token at the start of each new run
+        if self.x_prev is None:  # start of each run
+            self.general_event_model.new_token()
+            # assume that the previous scene is the same scene, so that not using update_f0
+            self.general_event_model.update(self.x_curr, self.x_curr)
+        else:
+            self.general_event_model.update(self.x_prev, self.x_curr)
+        # # for yoke model, need to reset hidden units by creating a new token (no previous scenes).
+        # if not event_boundary:
+        #     self.general_event_model_yoke.update(self.x_prev, x_curr)
+        # else:
+        #     self.general_event_model_yoke.new_token()
+        #     if self.x_prev is None:  # start of each run:
+        #         self.general_event_model_yoke.update(x_curr, x_curr)
+        #     else:
+        #         self.general_event_model_yoke.update(self.x_prev, x_curr)
+
+    def init_diagnostic_variables(self, x):
+        """
+        Initialize diagnostic variables
+        :param x: input scenes (n, d)
+        :param n: number of scenes
+        Returns:
+
+        """
+        n = x.shape[0]
+        self.results = Results()
+        # initialize arrays to store results
+        self.results.pe = np.zeros(np.shape(x)[0])
+        self.results.pe_w = np.zeros(np.shape(x)[0])
+        self.results.pe_w2 = np.zeros(np.shape(x)[0])
+        self.results.pe_w3 = np.zeros(np.shape(x)[0])
+        self.results.pe_yoke = np.zeros(np.shape(x)[0])
+        self.results.x_hat = np.zeros(np.shape(x))
+        self.results.x_hat_w = np.zeros(np.shape(x))
+        self.results.x_hat_w2 = np.zeros(np.shape(x))
+        self.results.x_hat_w3 = np.zeros(np.shape(x))
+        self.results.after_relu = np.zeros((np.shape(x)[0], int(self.f_opts['n_hidden'])))
+        self.results.after_relu_w = np.zeros((np.shape(x)[0], int(self.f_opts['n_hidden'])))
+        self.results.after_relu_w2 = np.zeros((np.shape(x)[0], int(self.f_opts['n_hidden'] * 2)))
+        self.results.after_relu_w3 = np.zeros((np.shape(x)[0], int(self.f_opts['n_hidden'] * 3)))
+        self.results.boundaries = np.zeros((n,))
+        self.results.log_like = np.zeros((n, self.n_clusters)) - np.inf
+        self.results.log_prior = np.zeros((n, self.n_clusters)) - np.inf
+        self.results.log_post = np.zeros((n, self.n_clusters)) - np.inf
+
+    def spawn_event_model(self):
+        """
+        Spawn a new event model, set its weights by the generic event model's weights
+        Returns:
+        new_model: the new event model
+        """
+        # This line trigger dynamic importing
+        new_model = self.f_class_remote.remote(self.d, **self.f_opts)
+        new_model.init_model.remote()
+        new_model.do_reset_weights.remote()
+        # if instead the following, model weights will be different from the above, which is weird!
+        # model = ray.get(new_model.init_model.remote())
+        # new_model.set_model.remote(model)
+
+        # Model Modification: comment for random init instead of weights from generic model
+        # set weights based on the general event model,
+        # always use .model_weights instead of .model.get_weights() or .model.set_weights(...)
+        # because .model_weights is guaranteed to be up-to-date.
+        logger.info('Set generic weights to new event schemas')
+        new_model.set_model_weights.remote(self.general_event_model.model_weights)
+        return new_model
+
+    def run(self, x, n_clusters=None, progress_bar=False, leave_progress_bar=True, minimize_memory=False, compile_model=True,
+            train=True):
         """
         Parameters
         ----------
         x: N x D array of
 
-        k: int
+        n_clusters: int
             maximum number of clusters
 
         progress_bar: bool
@@ -246,33 +350,11 @@ class SEM(object):
         # update internal state
         self._update_state(x, n_clusters)
         self.init_general_models()
-
-        n = x.shape[0]
-
-        # initialize arrays
-        pe = np.zeros(np.shape(x)[0])
-        pe_w = np.zeros(np.shape(x)[0])
-        pe_w2 = np.zeros(np.shape(x)[0])
-        pe_w3 = np.zeros(np.shape(x)[0])
-        pe_yoke = np.zeros(np.shape(x)[0])
-        x_hat = np.zeros(np.shape(x))
-        x_hat_w_array = np.zeros(np.shape(x))
-        x_hat_w2_array = np.zeros(np.shape(x))
-        x_hat_w3_array = np.zeros(np.shape(x))
-        after_relu_array = np.zeros((np.shape(x)[0], int(self.f_opts['n_hidden'])))
-        after_relu_w_array = np.zeros((np.shape(x)[0], int(self.f_opts['n_hidden'])))
-        after_relu_w2_array = np.zeros((np.shape(x)[0], int(self.f_opts['n_hidden'] * 2)))
-        after_relu_w3_array = np.zeros((np.shape(x)[0], int(self.f_opts['n_hidden'] * 3)))
-        boundaries = np.zeros((n,))
-
+        self.init_diagnostic_variables(x)
         # these are special case variables to deal with the possibility the current event is restarted
-        # lik_restart_event = -np.inf
-        # repeat_prob = -np.inf
-        # restart_prob = 0
-
-        log_like = np.zeros((n, self.n_clusters)) - np.inf
-        log_prior = np.zeros((n, self.n_clusters)) - np.inf
-        log_post = np.zeros((n, self.n_clusters)) - np.inf
+        lik_restart_event = -np.inf
+        repeat_prob = 0
+        restart_prob = -np.inf
 
         # this code just controls the presence/absence of a progress bar -- it isn't important
         if progress_bar:
@@ -282,36 +364,24 @@ class SEM(object):
             def my_it(l):
                 return range(l)
 
-        for ii in my_it(n):
+        for ii in my_it(x.shape[0]):
 
-            x_curr = x[ii, :].copy()
+            ### get the prior, likelihood, and posterior for all events and choose the best one
+            self.x_curr = x[ii, :].copy()
 
-            # prior
+            # get prior
             prior = self._calculate_unnormed_sCRP(self.k_prev)
             # likelihood
             active = np.nonzero(prior)[0]
             lik = np.zeros(len(active))
             # store the predicted vector
             x_hat_active = None
-            kwargs = {'x_curr': x_curr, 'x_prev': self.x_prev, 'k_prev': self.k_prev}
+            kwargs = {'x_curr': self.x_curr, 'x_prev': self.x_prev, 'k_prev': self.k_prev}
             jobs = []
             array_res = []
             for count, k0 in enumerate(active):
                 if k0 not in self.event_models.keys():
-                    # This line trigger dynamic importing
-                    new_model = self.f_class_remote.remote(self.d, **self.f_opts)
-                    new_model.init_model.remote()
-                    new_model.do_reset_weights.remote()
-                    # if instead the following, model weights will be different from the above, which is weird!
-                    # model = ray.get(new_model.init_model.remote())
-                    # new_model.set_model.remote(model)
-                    self.event_models[k0] = new_model
-                    # TODO: comment for random init instead of weights from generic model
-                    # set weights based on the general event model,
-                    # always use .model_weights instead of .model.get_weights() or .model.set_weights(...)
-                    # because .model_weights is guaranteed to be up-to-date.
-                    logger.info('Set generic weights to new event schemas')
-                    self.event_models[k0].set_model_weights.remote(self.general_event_model.model_weights)
+                    self.event_models[k0] = self.spawn_event_model()
                 jobs.append(self.event_models[k0].get_log_likelihood.remote(k0, **kwargs))
                 # Chunking only constrain cpu usage, memory usage grows as self.f_class_remote.remote(self.d, **self.f_opts)
                 # 300MB per Actor.
@@ -328,149 +398,90 @@ class SEM(object):
                     lik[k0] = pack
 
             # posterior
+            # calculate posterior for all event models
             posterior = np.log(prior[:len(active)]) / self.d + lik
             if ii > 0:
                 # is restart higher under the current event
                 restart_prob = lik_restart_event + np.log(prior[self.k_prev] - self.lmda) / self.d
                 repeat_prob = posterior[self.k_prev]
-                if restart_prob > repeat_prob:
-                    logger.debug(f'\nlog_RESTART>log_repeat event_type {self.k_prev}')
-                else:
-                    logger.debug(f'\nlog_REPEAT>log_restart event_type {self.k_prev}')
                 posterior[self.k_prev] = np.max([repeat_prob, restart_prob])
 
-            logger.debug(f'\nlog_prior {np.log(prior[:len(active)]) / self.d}'
-                         f'\nlog_lik {lik:}'
-                         f'\nlog_posterior {posterior:}')
+            # add pe or uncertainty to the windows
+            # pe_current = np.linalg.norm(self.x_curr - x_hat_active)
+            # uncertainty_current = self.event_models[self.k_prev].get_uncertainty.remote(self.x_curr, n_resample=16)
+            # self.pe_window.append(pe_current)
+            # self.uncertainty_window.append(uncertainty_current)
 
             # get the MAP cluster
             if not train:
                 # during evaluation, not consider creating a new event.
-                k = np.argmax(posterior[:-1])  # MAP cluster
+                self.k_curr = np.argmax(posterior[:-1])  # MAP cluster
             else:
-                k = np.argmax(posterior)  # MAP cluster
-            logger.debug(f'\nEvent type {k}')
-            if k != self.k_prev:
-                logger.debug(f'Boundary Switching')
+                self.k_curr = np.argmax(posterior)  # MAP cluster
+            logger.debug(f'\nEvent type {self.k_curr}')
 
+            ### determine the type of event_boundary and update event models' weights
+            ### and internal states (activations, etc.)
             # determine whether there was a boundary, and which type
-            event_boundary = (k != self.k_prev) or ((k == self.k_prev) and (restart_prob > repeat_prob))
+            event_boundary = (self.k_curr != self.k_prev) or ((self.k_curr == self.k_prev) and (restart_prob > repeat_prob))
             # Add 2 and 3 to code for new_event and restarting
-            if k == len(active) - 1:
-                boundaries[ii] = 2
-            elif (k == self.k_prev) and (restart_prob > repeat_prob):
-                boundaries[ii] = 3
+            if self.k_curr == len(active) - 1:
+                self.results.boundaries[ii] = 2
+            elif (self.k_curr == self.k_prev) and (restart_prob > repeat_prob):
+                self.results.boundaries[ii] = 3
             else:
-                boundaries[ii] = event_boundary  # could be 0 or 1
+                self.results.boundaries[ii] = event_boundary  # could be 0 or 1
+            if event_boundary:
+                # assert margin > self.threshold, f"Sanity check failed, {margin} <= self.threshold={self.threshold}"
+                logger.debug(f'Boundary Switching')
+            # if there were a boundary, update pe and uncertainty windows
+            # if event_boundary:
+            #     self.pe_window = []
+            #     self.uncertainty_window = []
 
             # update schema activations
+            # train current event model and generic event model
             if train:
-                self.c[k] += self.kappa  # update counts
+                self.c[self.k_curr] += self.kappa  # update counts
+                self.update_current_event_model(event_boundary)
+                self.update_generic_event_model()
             else:
-                self.c_eval[k] += 1
+                self.c_eval[self.k_curr] += 1
 
-            # train event schema
-            if train:
-                if not event_boundary:
-                    # we're in the same event -> update using previous scene
-                    assert self.x_prev is not None
-                    self.event_models[k].update.remote(self.x_prev, x_curr)
-                else:
-                    # create a new token to avoid mixing with a distant past
-                    self.event_models[k].new_token.remote()
-                    # re-add filler vector, need to update and recompute f0
-                    # TODO: uncomment to add f0
-                    # self.event_models[k].update_f0.remote(x_curr)
-                    # TODO: comment to add f0
-                    if self.x_prev is None:  # start of each run
-                        # assume that the previous scene is the same scene
-                        self.event_models[k].update.remote(x_curr, x_curr)
-                    else:
-                        self.event_models[k].update.remote(self.x_prev, x_curr)
-
-            # parallel training a general event schema
-            if train:
-                # for the world model, new token at the start of each new run
-                if self.x_prev is None:  # start of each run
-                    self.general_event_model.new_token()
-                    # self.general_event_model_x2.new_token()
-                    # self.general_event_model_x3.new_token()
-                    # self.general_event_model.update_f0(x_curr)
-                    # assume that the previous scene is the same scene, so that not using update_f0
-                    self.general_event_model.update(x_curr, x_curr)
-                    # self.general_event_model_x2.update(x_curr, x_curr)
-                    # self.general_event_model_x3.update(x_curr, x_curr)
-                else:
-                    self.general_event_model.update(self.x_prev, x_curr)
-                    # self.general_event_model_x2.update(self.x_prev, x_curr)
-                    # self.general_event_model_x3.update(self.x_prev, x_curr)
-                # # for yoke model, need to reset hidden units by creating a new token (no previous scenes).
-                # if not event_boundary:
-                #     self.general_event_model_yoke.update(self.x_prev, x_curr)
-                # else:
-                #     self.general_event_model_yoke.new_token()
-                #     if self.x_prev is None:  # start of each run:
-                #         self.general_event_model_yoke.update(x_curr, x_curr)
-                #     else:
-                #         self.general_event_model_yoke.update(self.x_prev, x_curr)
-
-            self.x_prev = x_curr  # store the current scene for next trial
-            self.k_prev = k  # store the current event for the next trial
-
-            # these are a diagnostic readout and do not affect the model
+            # store diagnostic information for the current scene, not affecting the models
             if ii > 0:
-                log_like[ii, :len(active)] = lik
-                log_prior[ii, :len(active)] = np.log(prior[:len(active)]) / self.d
-                log_post[ii, :len(active)] = posterior
+                self.results.log_like[ii, :len(active)] = lik
+                self.results.log_prior[ii, :len(active)] = np.log(prior[:len(active)]) / self.d
+                self.results.log_post[ii, :len(active)] = posterior
 
-                x_hat[ii, :] = x_hat_active
-                pe[ii] = np.linalg.norm(x_curr - x_hat_active)
-                after_relu_array[ii, :] = after_relu
+                self.results.x_hat[ii, :] = x_hat_active
+                self.results.pe[ii] = np.linalg.norm(self.x_curr - x_hat_active)
+                self.results.after_relu[ii, :] = after_relu
                 # get predictions from world model to extract prediction error
                 after_relu_w, x_hat_w = self.general_event_model.predict_next(self.x_prev)
-                # after_relu_w2, x_hat_w2 = self.general_event_model_x2.predict_next(self.x_prev)
-                # after_relu_w3, x_hat_w3 = self.general_event_model_x3.predict_next(self.x_prev)
-                pe_w[ii] = np.linalg.norm(x_curr - x_hat_w)
-                # pe_w2[ii] = np.linalg.norm(x_curr - x_hat_w2)
-                # pe_w3[ii] = np.linalg.norm(x_curr - x_hat_w3)
-                x_hat_w_array[ii, :] = x_hat_w
-                # x_hat_w2_array[ii, :] = x_hat_w2
-                # x_hat_w3_array[ii, :] = x_hat_w3
-                after_relu_w_array[ii, :] = after_relu_w
-                # after_relu_w2_array[ii, :] = after_relu_w2
-                # after_relu_w3_array[ii, :] = after_relu_w3
+                self.results.pe_w[ii] = np.linalg.norm(self.x_curr - x_hat_w)
+                self.results.x_hat_w[ii, :] = x_hat_w
+                self.results.after_relu_w[ii, :] = after_relu_w
             else:
-                log_like[ii, 0] = 0.0
-                log_prior[ii, 0] = self.alfa
-                log_post[ii, 0] = 1.0
+                self.results.log_like[ii, 0] = 0.0
+                self.results.log_prior[ii, 0] = self.alfa
+                self.results.log_post[ii, 0] = 1.0
+
+            # update scene and event type variables for next iteration
+            self.x_prev = self.x_curr  # store the current scene for next trial
+            self.k_prev = self.k_curr  # store the current event type for the next trial
+            self.x_curr = None  # reset the current scene
+            self.k_curr = None  # reset the current event type
 
         # Remove null columns to optimize memory storage, only for some arrays.
-        self.results = Results()
-        self.results.pe = pe
-        self.results.pe_w = pe_w
-        self.results.pe_w2 = pe_w2
-        self.results.pe_w3 = pe_w3
-        self.results.pe_yoke = pe_yoke
-        log_like = log_like[:, np.any(log_like != -np.inf, axis=0)]
-        self.results.log_like = log_like
-        log_prior = log_prior[:, np.any(log_prior != -np.inf, axis=0)]
-        self.results.log_prior = log_prior
-        log_post = log_post[:, np.any(log_post != 0, axis=0)]
-        self.results.log_post = np.log(log_post)
-        self.results.e_hat = np.argmax(log_post, axis=1)
+        self.results.log_like = self.results.log_like[:, np.any(self.results.log_like != -np.inf, axis=0)]
+        self.results.log_prior = self.results.log_prior[:, np.any(self.results.log_prior != -np.inf, axis=0)]
+        self.results.log_post = self.results.log_post[:, np.any(self.results.log_post != 0, axis=0)]
+        # store more diagnostic information
+        self.results.e_hat = np.argmax(self.results.log_post, axis=1)
         self.results.x = x
-        self.results.x_hat = x_hat
-        self.results.x_hat_w = x_hat_w_array
-        self.results.x_hat_w2 = x_hat_w2_array
-        self.results.x_hat_w3 = x_hat_w3_array
-        self.results.after_relu = after_relu_array
-        self.results.after_relu_w = after_relu_w_array
-        self.results.after_relu_w2 = after_relu_w2_array
-        self.results.after_relu_w3 = after_relu_w3_array
-
         # switching between video, not a real boundary
-        boundaries[0] = 0
-        self.results.boundaries = boundaries
+        self.results.boundaries[0] = 0
         self.results.c = self.c.copy()
         self.results.c_eval = self.c_eval.copy()
         self.results.Sigma = {i: ray.get(self.event_models[i].get_sigma.remote()) for i in self.event_models.keys()}

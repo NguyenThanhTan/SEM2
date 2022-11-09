@@ -354,6 +354,8 @@ class LinearEvent(object):
             after_relu, Xp_hat = self.predict_next_generative(X)
         LL = fast_mvnorm_diagonal_logprob(Xp.reshape(-1) - Xp_hat.reshape(-1), self.Sigma)
         # tan's code to scale
+        # TODO: a good practice to see prior distributions and likelihood distributions so that
+        # one doesn't dominate the other.
         LL /= self.d
         logger.debug(f'f_next is trained, likelihood-repeat {LL}')
         return after_relu, Xp_hat, LL
@@ -449,32 +451,58 @@ class LinearEvent(object):
         if np.shape(self.prediction_errors)[0] > 1:
             self.Sigma = map_variance(self.prediction_errors, self.var_df0, self.var_scale0)
 
+    def get_log_likelihood_current(self, x_prev, x_curr):
+        """
+        This function receives the previous scene(s) and predicts the current scene,
+        then return log likelihood of the predicted scene for the active event
+        Args:
+            x_prev:
+            x_curr:
+
+        Returns:
+
+        """
+        assert x_prev is not None
+        # _predict_next does account for past scenes in history with hidden=True
+        after_relu, x_hat_active, lik = self.log_likelihood_next(x_prev, x_curr, hidden=True)
+
+        # special case for the possibility of returning to the start of the current event
+        # lik_restart_event = self.log_likelihood_f0(x_curr)
+        # added on july_26, manually tested and the logic is correct
+        # hidden=False, past scenes don't influence here
+        # Model Modification: change for f0
+        # re-add filler vector, compute likelihood f0 instead
+        # lik_restart_event = self.log_likelihood_f0(x_curr)
+        _, _, lik_restart_event = self.log_likelihood_next(x_prev, x_curr, hidden=False)
+        return after_relu, x_hat_active, lik, lik_restart_event
+
+    def get_log_likelihood_old(self, x_prev, x_curr):
+        """
+        This function receives the previous scene(s) and predicts the current scene,
+        then return log likelihood of the predicted scene for the previously learned event
+        Args:
+            x_prev:
+            x_curr:
+
+        Returns:
+
+        """
+        # Model Modification: change for f0
+        # re-add filler vector, compute likelihood f0 instead
+        # lik = self.log_likelihood_f0(x_curr)
+        # hidden=False, past scenes don't influence here
+        if x_prev is None:  # start of each run
+            _, _, lik = self.log_likelihood_next(x_curr, x_curr, hidden=False)
+        else:
+            _, _, lik = self.log_likelihood_next(x_prev, x_curr, hidden=False)
+        return lik
+
     def get_log_likelihood(self, k0, k_prev, x_prev, x_curr):
         current_event = (k0 == k_prev)
         if current_event:
-            assert x_prev is not None
-            # _predict_next does account for past scenes in history with hidden=True
-            after_relu, x_hat_active, lik = self.log_likelihood_next(x_prev, x_curr, hidden=True)
-
-            # special case for the possibility of returning to the start of the current event
-            # lik_restart_event = self.log_likelihood_f0(x_curr)
-            # added on july_26, manually tested and the logic is correct
-            # hidden=False, past scenes don't influence here
-            # TODO: change for f0
-            # re-add filler vector, compute likelihood f0 instead
-            # lik_restart_event = self.log_likelihood_f0(x_curr)
-            _, _, lik_restart_event = self.log_likelihood_next(x_prev, x_curr, hidden=False)
-            return k0, (after_relu, x_hat_active, lik, lik_restart_event)
+            return k0, self.get_log_likelihood_current(x_prev, x_curr)
         else:
-            # TODO: change for f0
-            # re-add filler vector, compute likelihood f0 instead
-            # lik = self.log_likelihood_f0(x_curr)
-            # hidden=False, past scenes don't influence here
-            if x_prev is None:  # start of each run
-                _, _, lik = self.log_likelihood_next(x_curr, x_curr, hidden=False)
-            else:
-                _, _, lik = self.log_likelihood_next(x_prev, x_curr, hidden=False)
-            return k0, lik
+            return k0, self.get_log_likelihood_old(x_prev, x_curr)
 
     def get_n_epochs(self):
         return self.n_epochs
