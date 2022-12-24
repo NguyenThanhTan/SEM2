@@ -19,6 +19,10 @@ import ray
 import os
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+seed = int(os.environ.get('SEED', '1111'))
+logger.info(f'Setting seed in sem.py, seed={seed}')
+np.random.seed(seed)
+tf.random.set_seed(seed)
 
 
 class Results(object):
@@ -28,7 +32,7 @@ class Results(object):
 
 class SEM(object):
 
-    def __init__(self, lmda=1., alfa=10.0, kappa=1, f_class=GRUEvent, f_opts=None):
+    def __init__(self, lmda=1., alfa=10.0, kappa=1, threshold=0.4, trigger='pe', f_class=GRUEvent, f_opts=None):
         """
         Parameters
         ----------
@@ -49,6 +53,10 @@ class SEM(object):
         self.lmda = lmda
         self.alfa = alfa
         self.kappa = kappa
+        self.trigger = trigger
+        self.threshold = threshold
+        self.pe_window = []
+        self.uncertainty_window = []
         # self.beta = beta
 
         if f_class is None:
@@ -167,7 +175,7 @@ class SEM(object):
 
         # calculate sCRP prior
         prior = self.c.copy()
-        # added on june 22 to test the case when old is not benefited
+        # equating all visited clusters to the same value instead of the frequency of visits
         # Model Modification: comment for sCRP
         prior[prior > 0] = 1
         idx = len(np.nonzero(self.c)[0])  # get number of visited clusters
@@ -268,7 +276,7 @@ class SEM(object):
 
     def init_diagnostic_variables(self, x):
         """
-        Initialize diagnostic variables
+        Initialize diagnostic variables based on dimensions of input data x
         :param x: input scenes (n, d)
         :param n: number of scenes
         Returns:
@@ -276,6 +284,7 @@ class SEM(object):
         """
         n = x.shape[0]
         self.results = Results()
+        self.results.uncertainty = np.zeros(np.shape(x)[0])
         # initialize arrays to store results
         self.results.pe = np.zeros(np.shape(x)[0])
         self.results.pe_w = np.zeros(np.shape(x)[0])
@@ -294,6 +303,7 @@ class SEM(object):
         self.results.log_like = np.zeros((n, self.n_clusters)) - np.inf
         self.results.log_prior = np.zeros((n, self.n_clusters)) - np.inf
         self.results.log_post = np.zeros((n, self.n_clusters)) - np.inf
+        self.results.triggers = np.zeros((n,))
 
     def spawn_event_model(self):
         """
@@ -313,7 +323,7 @@ class SEM(object):
         # set weights based on the general event model,
         # always use .model_weights instead of .model.get_weights() or .model.set_weights(...)
         # because .model_weights is guaranteed to be up-to-date.
-        logger.info('Set generic weights to new event schemas')
+        # logger.info('Set generic weights to new event schema')
         new_model.set_model_weights.remote(self.general_event_model.model_weights)
         return new_model
 
@@ -356,6 +366,11 @@ class SEM(object):
         repeat_prob = 0
         restart_prob = -np.inf
 
+        # store the predicted vector and the after-relu vector for the current active event
+        # x_hat_active, after_relu = None, None
+
+        # pe_current, uncertainty_current = None, None  # for the active event, NOT the MAP event
+
         # this code just controls the presence/absence of a progress bar -- it isn't important
         if progress_bar:
             def my_it(l):
@@ -366,53 +381,78 @@ class SEM(object):
 
         for ii in my_it(x.shape[0]):
 
+            is_new_movie = (self.k_prev is None and self.x_prev is None) or (ii == 0)
             ### get the prior, likelihood, and posterior for all events and choose the best one
             self.x_curr = x[ii, :].copy()
 
-            # get prior
-            prior = self._calculate_unnormed_sCRP(self.k_prev)
-            # likelihood
-            active = np.nonzero(prior)[0]
-            lik = np.zeros(len(active))
-            # store the predicted vector
-            x_hat_active = None
-            kwargs = {'x_curr': self.x_curr, 'x_prev': self.x_prev, 'k_prev': self.k_prev}
-            jobs = []
-            array_res = []
+            # get prior, prior always have one more non-zero element than #events,
+            # because of the new event possibility
+            prior = self._calculate_unnormed_sCRP(self.k_prev)  # prior: [0.01 0. 0. ...] (
+            active = np.nonzero(prior)[0]  # active: [0]
+            # if a new event was created in the previous step, then len(active) would increase by 1
+            # and a new placeholder event model should be created in this step. (to calculate "likelihood").
             for count, k0 in enumerate(active):
                 if k0 not in self.event_models.keys():
                     self.event_models[k0] = self.spawn_event_model()
-                jobs.append(self.event_models[k0].get_log_likelihood.remote(k0, **kwargs))
-                # Chunking only constrain cpu usage, memory usage grows as self.f_class_remote.remote(self.d, **self.f_opts)
-                # 300MB per Actor.
-                # Actors will exit when the original handle to the actor is out of scope,
-                # thus, execute the jobs here instead of out of the loop
-                if (len(jobs) == 8) or (count == len(active) - 1):
-                    assert count == k0, f"Sanity check failed, count={count} != k0={k0}"
-                    array_res = array_res + ray.get(jobs)
-                    jobs = []
-            for (k0, pack) in array_res:
-                if k0 == self.k_prev:
-                    after_relu, x_hat_active, lik[k0], lik_restart_event = pack
+                    logger.info(f"Spawned event model {k0}-th")
+            # likelihood
+            # lik = np.zeros(len(active))
+            lik = np.full(len(active), -np.inf)
+            # kwargs = {'x_curr': self.x_curr, 'x_prev': self.x_prev, 'k_prev': self.k_prev}
+            jobs = []
+            array_res = []
+            # only calculate all other likelihoods when the threshold is exceeded or this is
+            # the first scene of a new movie (self.k_prev and self.x_prev were reset by SEMContext)
+            if is_new_movie:
+                margin = self.threshold + 1
+            else:
+                # calculate the likelihood of the current event
+                k0, pack = ray.get([self.event_models[self.k_prev].get_log_likelihood.remote(
+                    k0=self.k_prev, k_prev=self.k_prev, x_curr=self.x_curr, x_prev=self.x_prev)])[0]
+                after_relu, x_hat_active, lik[k0], lik_restart_event = pack
+                pe_current = np.linalg.norm(self.x_curr - x_hat_active)
+                uncertainty_current = ray.get([self.event_models[self.k_prev].get_uncertainty.remote(
+                    self.x_curr, n_resample=16)])[0]
+                if self.trigger == 'pe':
+                    margin = pe_current - np.mean(self.pe_window)
                 else:
+                    assert self.trigger == 'uncertainty', f'trigger must be pe or uncertainty, get {self.trigger}'
+                    margin = uncertainty_current - np.mean(self.uncertainty_window)
+            # if triggered iterate over all other event models (old and new, not current) and calculate likelihoods
+            if margin > self.threshold:
+            # if True:  # always trigger
+                for count, k0 in enumerate(active):
+                    # already calculated the likelihood for the active event, skip
+                    if (not is_new_movie) and (k0 == self.k_prev):
+                        continue
+                    jobs.append(self.event_models[k0].get_log_likelihood.remote(
+                        k0=k0, k_prev=self.k_prev, x_curr=self.x_curr, x_prev=self.x_prev))
+                    # Chunking only constrain cpu usage, memory usage grows as
+                    # #actors, self.f_class_remote.remote(self.d, **self.f_opts): 300MB per Actor.
+                    # Actors will exit when the original handle to the actor is out of scope,
+                    # thus, execute the jobs here instead of out of the loop
+                    if (len(jobs) == 8) or (count == len(active) - 1):
+                        assert count == k0, f"Sanity check failed, count={count} != k0={k0}"
+                        array_res = array_res + ray.get(jobs)
+                        jobs = []
+                for (k0, pack) in array_res:
                     lik[k0] = pack
-
+                self.results.triggers[ii] = True
+            else:
+                self.results.triggers[ii] = False
+                # only restart the current event if the threshold is exceeded
+                lik_restart_event = -np.inf
             # posterior
             # calculate posterior for all event models
             posterior = np.log(prior[:len(active)]) / self.d + lik
-            if ii > 0:
+            # restarting the active event is an option only if this is not the first scene of a new movie
+            if not is_new_movie:
                 # is restart higher under the current event
                 restart_prob = lik_restart_event + np.log(prior[self.k_prev] - self.lmda) / self.d
                 repeat_prob = posterior[self.k_prev]
                 posterior[self.k_prev] = np.max([repeat_prob, restart_prob])
 
-            # add pe or uncertainty to the windows
-            # pe_current = np.linalg.norm(self.x_curr - x_hat_active)
-            # uncertainty_current = self.event_models[self.k_prev].get_uncertainty.remote(self.x_curr, n_resample=16)
-            # self.pe_window.append(pe_current)
-            # self.uncertainty_window.append(uncertainty_current)
-
-            # get the MAP cluster
+            # choose the best (MAP) event
             if not train:
                 # during evaluation, not consider creating a new event.
                 self.k_curr = np.argmax(posterior[:-1])  # MAP cluster
@@ -420,54 +460,62 @@ class SEM(object):
                 self.k_curr = np.argmax(posterior)  # MAP cluster
             logger.debug(f'\nEvent type {self.k_curr}')
 
-            ### determine the type of event_boundary and update event models' weights
-            ### and internal states (activations, etc.)
+            ### determine the type of event_boundary, then
+            ### update event models' weights and internal SEM's states (activations, etc.)
             # determine whether there was a boundary, and which type
             event_boundary = (self.k_curr != self.k_prev) or ((self.k_curr == self.k_prev) and (restart_prob > repeat_prob))
-            # Add 2 and 3 to code for new_event and restarting
+            # 0=no_switch, 1=switch_old, 2=new, 3=restart_current
             if self.k_curr == len(active) - 1:
                 self.results.boundaries[ii] = 2
             elif (self.k_curr == self.k_prev) and (restart_prob > repeat_prob):
                 self.results.boundaries[ii] = 3
             else:
                 self.results.boundaries[ii] = event_boundary  # could be 0 or 1
-            if event_boundary:
-                # assert margin > self.threshold, f"Sanity check failed, {margin} <= self.threshold={self.threshold}"
-                logger.debug(f'Boundary Switching')
-            # if there were a boundary, update pe and uncertainty windows
-            # if event_boundary:
-            #     self.pe_window = []
-            #     self.uncertainty_window = []
 
-            # update schema activations
-            # train current event model and generic event model
             if train:
+                # update schema activations
                 self.c[self.k_curr] += self.kappa  # update counts
+                # train current event model, update history if there is an event boundary
                 self.update_current_event_model(event_boundary)
+                # train generic event model
                 self.update_generic_event_model()
             else:
                 self.c_eval[self.k_curr] += 1
 
-            # store diagnostic information for the current scene, not affecting the models
-            if ii > 0:
-                self.results.log_like[ii, :len(active)] = lik
-                self.results.log_prior[ii, :len(active)] = np.log(prior[:len(active)]) / self.d
-                self.results.log_post[ii, :len(active)] = posterior
+            ### add pe or uncertainty to the running windows
+            # if this is the first scene of a movie, then we assume that the previous event type
+            # is the same as the MAP event and calculate PE and uncertainty for that event, treat x_curr as x_prev
+            # otherwise, PE and uncertainty were calculated in the trigger section above
+            if is_new_movie:
+                _, x_hat_active = ray.get([self.event_models[self.k_curr].predict_next_generative.remote(self.x_curr)])[0]
+                pe_current = np.linalg.norm(self.x_curr - x_hat_active)
+                uncertainty_current = ray.get([self.event_models[self.k_curr].get_uncertainty.remote(
+                    self.x_curr, n_resample=16)])[0]
+            # if there were a boundary (either switching movies or real boundaries),
+            # reset pe and uncertainty running windows
+            if event_boundary:
+                self.pe_window = []
+                self.uncertainty_window = []
+            self.pe_window.append(pe_current)
+            self.uncertainty_window.append(uncertainty_current)
 
+            ### store diagnostic information for the current scene, not affecting the models
+            self.results.log_like[ii, :len(active)] = lik
+            self.results.log_prior[ii, :len(active)] = np.log(prior[:len(active)]) / self.d
+            self.results.log_post[ii, :len(active)] = posterior
+            # can only make predictions if this is not the first scene of a new movie
+            if not is_new_movie:
                 self.results.x_hat[ii, :] = x_hat_active
-                self.results.pe[ii] = np.linalg.norm(self.x_curr - x_hat_active)
+                self.results.pe[ii] = pe_current
+                self.results.uncertainty[ii] = uncertainty_current
                 self.results.after_relu[ii, :] = after_relu
                 # get predictions from world model to extract prediction error
                 after_relu_w, x_hat_w = self.general_event_model.predict_next(self.x_prev)
                 self.results.pe_w[ii] = np.linalg.norm(self.x_curr - x_hat_w)
                 self.results.x_hat_w[ii, :] = x_hat_w
                 self.results.after_relu_w[ii, :] = after_relu_w
-            else:
-                self.results.log_like[ii, 0] = 0.0
-                self.results.log_prior[ii, 0] = self.alfa
-                self.results.log_post[ii, 0] = 1.0
 
-            # update scene and event type variables for next iteration
+            ### update scene and event type variables for next iteration
             self.x_prev = self.x_curr  # store the current scene for next trial
             self.k_prev = self.k_curr  # store the current event type for the next trial
             self.x_curr = None  # reset the current scene

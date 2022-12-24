@@ -51,7 +51,7 @@ LOGFORMAT = '%(name)s - %(levelname)s - %(message)s'
 c_handler.setFormatter(logging.Formatter(LOGFORMAT))
 logger.addHandler(c_handler)
 
-logger.info(f'{__file__}: Make Model picklable')
+# logger.info(f'{__file__}: Make Model picklable')
 # Run the function
 make_keras_picklable()
 

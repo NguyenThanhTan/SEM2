@@ -8,7 +8,7 @@ logger.info('Import  event_models.py')
 import numpy as np
 import tensorflow as tf
 
-logger.info(f"{__file__}: TensorFlow Version: {tf.__version__}")
+# logger.info(f"{__file__}: TensorFlow Version: {tf.__version__}")
 tf.keras.backend.set_floatx('float64')
 # these settings seem to limit # threads for each process (ray actor)
 # setting here instead of in the main program, since event_models.py is imported for each separate ray actor and not inherit.
@@ -26,6 +26,10 @@ from scipy.stats import norm
 import os
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+seed = int(os.environ.get('SEED', '1111'))
+logger.info(f'Setting seed in event_models.py, seed={seed}')
+np.random.seed(seed)
+tf.random.set_seed(seed)
 
 
 def map_variance(samples, nu0, var0):
@@ -376,10 +380,6 @@ class LinearEvent(object):
             logger.debug('new event cluster for a new event type')
             # special case for the first cluster which is already created
             return
-        # tan's code to test what if restarting already happen previously.
-        # if len(self.x_history) and self.x_history[-1].shape[0] == 0:
-        #     logger.debug('already created cluster')
-        #     return
         self.x_history.append(np.zeros((0, self.d)))
 
     def predict_next_generative(self, X):
@@ -499,6 +499,8 @@ class LinearEvent(object):
 
     def get_log_likelihood(self, k0, k_prev, x_prev, x_curr):
         current_event = (k0 == k_prev)
+        # return k0 because it helps with assigning likelihoods after fetching results from
+        # ray remote function
         if current_event:
             return k0, self.get_log_likelihood_current(x_prev, x_curr)
         else:
@@ -632,7 +634,16 @@ class RecurrentLinearEvent(LinearEvent):
             logger.debug(f'{intermediate_input.shape} -> {l.name} -> {intermediate_output.shape}')
             intermediate_input = intermediate_output
         # return relu_output, intermediate_output, self.model.predict(x_test)
-        return relu_output, np.array(intermediate_output).reshape(1, -1)
+        return np.array(relu_output), np.array(intermediate_output).reshape(1, -1)
+
+    # predict without previous scenes
+    def predict_next_generative(self, X):
+        self.model.set_weights(self.model_weights)
+        X0 = np.reshape(unroll_data(X, self.t)[-1, :, :], (1, self.t, self.d))
+        logger.debug(f'predict_next_generative: X0 {X0.shape}')
+        # we don't need intermediate output for old events, only current event, assign None to save computation
+        after_relu = None
+        return after_relu, self.model.predict(X0)
 
     def predict_next(self, X, dropout=False, recurrent_dropout=False):
         """
@@ -646,6 +657,25 @@ class RecurrentLinearEvent(LinearEvent):
             return np.copy(X).reshape(1, -1)
 
         return self._predict_next(X, dropout=dropout, recurrent_dropout=recurrent_dropout)
+
+    def get_uncertainty(self, X, n_resample=16):
+        """
+        this function run prediction with input scene X for a number of time and return the
+        average variance of these predictions
+        Args:
+            X:
+            n_resample:
+
+        Returns:
+
+        """
+        predictions = []
+        for i in range(n_resample):
+            # predict_next return after_relu, x_hat
+            predictions.append(self.predict_next(X, dropout=True, recurrent_dropout=True)[1])
+        variance = np.mean(np.var(predictions, axis=0))
+        logger.debug(f'variance={variance}')
+        return variance
 
     def _predict_f0(self):
         return self.predict_next_generative(self.filler_vector)
@@ -696,15 +726,6 @@ class RecurrentLinearEvent(LinearEvent):
         if update_estimate:
             self.estimate()
             self.f_is_trained = True
-
-    # predict without previous scenes
-    def predict_next_generative(self, X):
-        self.model.set_weights(self.model_weights)
-        X0 = np.reshape(unroll_data(X, self.t)[-1, :, :], (1, self.t, self.d))
-        logger.debug(f'predict_next_generative: X0 {X0.shape}')
-        # we don't need intermediate output for experienced events, only current event, assign None to save computation
-        after_relu = None
-        return after_relu, self.model.predict(X0)
 
     # optional: run batch gradient descent on all past event clusters
     def estimate(self):
