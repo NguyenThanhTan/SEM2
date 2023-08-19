@@ -415,9 +415,11 @@ class SEM(object):
                     self.x_curr, n_resample=16)])[0]
                 if self.trigger == 'pe':
                     margin = pe_current - np.mean(self.pe_window)
-                else:
-                    assert self.trigger == 'uncertainty', f'trigger must be pe or uncertainty, get {self.trigger}'
+                elif self.trigger == 'uncertainty':
+                    # assert self.trigger == 'uncertainty', f'trigger must be pe or uncertainty, get {self.trigger}'
                     margin = uncertainty_current - np.mean(self.uncertainty_window)
+                else:
+                    margin = self.threshold + 1
             # if triggered iterate over all other event models (old and new, not current) and calculate likelihoods
             if margin > self.threshold:
             # if True:  # always trigger
