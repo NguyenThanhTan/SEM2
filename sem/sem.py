@@ -32,7 +32,7 @@ class Results(object):
 
 class SEM(object):
 
-    def __init__(self, lmda=1., alfa=10.0, kappa=1, threshold=0.4, trigger='pe', f_class=GRUEvent, f_opts=None):
+    def __init__(self, lmda=1., alfa=10.0, kappa=1, threshold=0.4, trigger='pe', f_class=GRUEvent, f_opts=None, equal_sigma=False):
         """
         Parameters
         ----------
@@ -55,6 +55,7 @@ class SEM(object):
         self.kappa = kappa
         self.trigger = trigger
         self.threshold = threshold
+        self.equal_sigma = bool(int(equal_sigma))
         self.pe_window = []
         self.uncertainty_window = []
         # self.beta = beta
@@ -522,6 +523,26 @@ class SEM(object):
             self.k_prev = self.k_curr  # store the current event type for the next trial
             self.x_curr = None  # reset the current scene
             self.k_curr = None  # reset the current event type
+
+            ### since each event model has its own self.Sigma,
+            ### this chunk of code below compute a global Sigma and reassign to all event models
+            if self.equal_sigma and len(self.event_models.keys()) > 1:
+                # if ii % 100 == 0:
+                #     print('updating sigmas')
+                Sigma = np.zeros((self.d, self.d))
+                count = 0
+                for k in self.event_models.keys():
+                    # only average sigmas among trained event models
+                    if ray.get(self.event_models[k].check_is_trained.remote()):
+                        Sigma += ray.get(self.event_models[k].get_sigma.remote())
+                        count += 1
+                # this assert is not true, since the newly spawned model could be chosen and trained so count could be len(self.event_models.keys()) or len(self.event_models.keys())-1
+                # assert count == len(self.event_models.keys())-1, f'count={count} != len(self.event_models.keys())-1={len(self.event_models.keys())-1}'
+                assert count > 0, f'count={count} <= 0'
+                Sigma /= count
+                for k in self.event_models.keys():
+                    self.event_models[k].set_sigma.remote(Sigma)
+
 
         # Remove null columns to optimize memory storage, only for some arrays.
         self.results.log_like = self.results.log_like[:, np.any(self.results.log_like != -np.inf, axis=0)]

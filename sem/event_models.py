@@ -17,6 +17,7 @@ tf.config.threading.set_inter_op_parallelism_threads(1)
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Activation, SimpleRNN, GRU, Dropout, LSTM, LeakyReLU, Lambda, LayerNormalization
 from tensorflow.keras import regularizers
+# from tensorflow.keras.optimizers.legacy import Adam
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.backend import l2_normalize
 from .utils import fast_mvnorm_diagonal_logprob, unroll_data, get_prior_scale, delete_object_attributes
@@ -156,7 +157,7 @@ class LinearEvent(object):
         self.reset_weights = reset_weights
         self.batch_update = batch_update
         self.training_pairs = []
-        self.prediction_errors = np.zeros((0, self.d), dtype=np.float)
+        self.prediction_errors = np.zeros((0, self.d), dtype=float)
         self.model_weights = None
 
         # initialize the covariance with the mode of the prior distribution
@@ -521,6 +522,11 @@ class LinearEvent(object):
     def get_sigma(self):
         return self.Sigma
 
+    def set_sigma(self, sigma):
+        self.Sigma = sigma
+
+    def check_is_trained(self):
+        return self.f_is_trained
 
 class RecurrentLinearEvent(LinearEvent):
 
